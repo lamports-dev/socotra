@@ -1,2 +1,7 @@
+# project
+/db
+/test-ledger
+config.dev.yml
+
 # rust
 /target

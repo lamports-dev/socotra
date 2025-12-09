@@ -1,0 +1,11 @@
+logs:
+  json: false
+state:
+  endpoint: http://127.0.0.1:8899
+  zst: false
+  segments: 16
+  path: ./db/init-state-sst
+  compression: none
+storage:
+  path: ./db
+  compression: none
