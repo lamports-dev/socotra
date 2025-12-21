@@ -39,8 +39,6 @@ impl Config {
 #[serde(deny_unknown_fields)]
 pub struct ConfigStateInit {
     pub endpoint: String,
-    #[serde(default)]
-    pub zst: bool,
     #[serde(default = "ConfigStateInit::default_segments")]
     pub segments: u8,
     pub path: PathBuf,

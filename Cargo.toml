@@ -22,7 +22,7 @@ maplit = "1.0.2"
 num_cpus = "1.16.0"
 pin-project = "1.1.10"
 prost = "0.14.1"
-reqwest = { version = "0.12.24", features = ["stream", "zstd"] }
+reqwest = { version = "0.12.24", features = ["stream"] }
 richat-client = "7.0.0"
 richat-proto = "7.0.0"
 richat-shared = { version = "7.1.0", features = ["tracing"] }

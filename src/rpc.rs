@@ -74,10 +74,7 @@ pub async fn fetch_confirmed_state(
 
     let url = Url::parse(&config.endpoint)
         .context("failed to parse endpoint")?
-        .join(&format!(
-            "/get-account-state/{slot}{}",
-            if config.zst { ".zst" } else { "" }
-        ))
+        .join(&format!("/get-account-state/{slot}"))
         .context("failed to create base endpoint")?;
 
     // segments is power of two, so we can use leading bits to divide the range
