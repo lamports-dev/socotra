@@ -1,14 +1,18 @@
 use {
-    crate::{config::ConfigStateInit, rocksdb::Rocksdb},
+    crate::{
+        config::ConfigStateInit,
+        rocksdb::{Rocksdb, SlotIndexValue},
+    },
     anyhow::Context as _,
     bytes::{Bytes, BytesMut},
     futures::{StreamExt, future::try_join_all, stream::Stream},
     pin_project::pin_project,
     reqwest::{Client, Url, header::CONTENT_TYPE},
     rocksdb::{DBCompressionType, SstFileWriter},
-    solana_client::nonblocking::rpc_client::RpcClient,
+    solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcBlockConfig},
     solana_commitment_config::CommitmentConfig,
     solana_sdk::{clock::Slot, pubkey::Pubkey},
+    solana_transaction_status_client_types::{TransactionDetails, UiTransactionEncoding},
     std::{
         path::{Path, PathBuf},
         pin::Pin,
@@ -19,11 +23,30 @@ use {
     tracing::info,
 };
 
-pub async fn get_confirmed_slot(endpoint: String) -> anyhow::Result<Slot> {
+pub async fn get_confirmed_slot(endpoint: String) -> anyhow::Result<SlotIndexValue> {
     let rpc = RpcClient::new(endpoint);
-    rpc.get_slot_with_commitment(CommitmentConfig::confirmed())
+
+    let slot = rpc
+        .get_slot_with_commitment(CommitmentConfig::confirmed())
         .await
-        .context("failed to get confirmed slot")
+        .context("failed to get confirmed slot")?;
+    let height = rpc
+        .get_block_with_config(
+            slot,
+            RpcBlockConfig {
+                encoding: Some(UiTransactionEncoding::Base64),
+                transaction_details: Some(TransactionDetails::None),
+                rewards: Some(false),
+                commitment: Some(CommitmentConfig::confirmed()),
+                max_supported_transaction_version: Some(u8::MAX),
+            },
+        )
+        .await
+        .context("failed to get confirmed block")?
+        .block_height
+        .context("no height in received confirmed block")?;
+
+    Ok(SlotIndexValue { slot, height })
 }
 
 /// Fetches confirmed account state from a patched RPC endpoint and writes SST files.

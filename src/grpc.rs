@@ -39,7 +39,7 @@ pub enum GeyserMessage {
 pub async fn subscribe(
     update_tx: mpsc::Sender<GeyserMessage>,
     config: ConfigSource,
-    mut confirmed_slot: Slot,
+    mut replay_from_slot: Slot,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let mut backoff_duration = config.reconnect.map(|c| c.backoff_init);
@@ -49,7 +49,7 @@ pub async fn subscribe(
         let mut stream = loop {
             tokio::select! {
                 _ = shutdown.cancelled() => continue,
-                result = subscribe_once(config.config.clone(), confirmed_slot) => match result {
+                result = subscribe_once(config.config.clone(), replay_from_slot) => match result {
                     Ok(stream) => break stream,
                     Err(error) => {
                         if let Some(sleep_duration) = backoff_duration {
@@ -83,7 +83,7 @@ pub async fn subscribe(
                             && status.code() == Code::InvalidArgument
                             && status.message().contains("replay")
                         {
-                            anyhow::bail!("failed to replay from_slot: {confirmed_slot}")
+                            anyhow::bail!("failed to replay from_slot: {replay_from_slot}")
                         } else {
                             error!(%error, "failed to get message from gRPC stream");
                             break;
@@ -138,7 +138,7 @@ pub async fn subscribe(
                 }
                 Some(UpdateOneof::Slot(update)) => {
                     if update.status() == SlotStatus::SlotConfirmed {
-                        confirmed_slot = update.slot;
+                        replay_from_slot = replay_from_slot.max(update.slot + 1);
                     }
 
                     GeyserMessage::Slot {
@@ -161,7 +161,7 @@ pub async fn subscribe(
 
 async fn subscribe_once(
     config: ConfigGrpcClient,
-    confirmed_slot: Slot,
+    replay_from_slot: Slot,
 ) -> anyhow::Result<SubscribeStream> {
     let mut connection = config
         .connect()
@@ -189,7 +189,7 @@ async fn subscribe_once(
             commitment: Some(CommitmentLevelProto::Processed as i32),
             accounts_data_slice: vec![],
             ping: None,
-            from_slot: Some(confirmed_slot),
+            from_slot: Some(replay_from_slot),
         })
         .await
         .context("failed to subscribe")

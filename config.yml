@@ -8,4 +8,28 @@ state:
   compression: none
 storage:
   path: ./db
-  compression: none
+  compression: none # none, snappy, zlib, bz2, lz4, lz4hc, zstd
+source:
+  # reconnect:
+  #   backoff_init: 100ms
+  #   backoff_max: 1s
+  endpoint: http://127.0.0.1:10000
+  ca_certificate: null
+  connect_timeout: null
+  buffer_size: null
+  http2_adaptive_window: null
+  http2_keep_alive_interval: null
+  initial_connection_window_size: null
+  initial_stream_window_size: null
+  keep_alive_timeout: null
+  keep_alive_while_idle: false
+  tcp_keepalive: 15s
+  tcp_nodelay: true
+  timeout: null
+  max_decoding_message_size: 4_194_304 # 4MiB, better set to 16MiB (because account messages can be more than 10MiB)
+  compression: # Optional compression, not recommended due to high traffic volume
+    accept: [] # valid: gzip, zstd
+    send: [] # valid: gzip, zstd
+  x_token: null
+bank:
+  updates_channel_size: 32_768

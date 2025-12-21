@@ -1,15 +1,12 @@
 use {
     crate::config::ConfigStorage,
     anyhow::Context,
-    prost::encoding::{encode_varint, encoded_len_varint},
+    prost::encoding::encode_varint,
     rocksdb::{
         ColumnFamily, ColumnFamilyDescriptor, DB, DBCompressionType, IngestExternalFileOptions,
         Options, WriteBatch,
     },
-    solana_sdk::{
-        clock::{Epoch, Slot},
-        pubkey::Pubkey,
-    },
+    solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
     std::{path::Path, sync::Arc, time::Instant},
     tracing::info,
 };
@@ -19,77 +16,66 @@ pub trait ColumnName {
 }
 
 #[derive(Debug)]
-pub struct SlotIndex;
+struct SlotIndexKey;
 
-impl ColumnName for SlotIndex {
+impl ColumnName for SlotIndexKey {
     const NAME: &'static str = "slot_index";
 }
 
-#[derive(Debug)]
-struct SlotIndexValue;
+#[derive(Debug, Clone, Copy)]
+pub struct SlotIndexValue {
+    pub slot: Slot,
+    pub height: Slot,
+}
 
 impl SlotIndexValue {
-    const fn encode(slot: Slot) -> [u8; 8] {
-        slot.to_be_bytes()
+    fn encode(&self) -> [u8; 16] {
+        let mut buf = [0u8; 16];
+        buf[..8].copy_from_slice(&self.slot.to_be_bytes());
+        buf[8..].copy_from_slice(&self.height.to_be_bytes());
+        buf
     }
 
-    fn decode(slice: &[u8]) -> anyhow::Result<Slot> {
-        let bytes: [u8; 8] = slice.try_into().context("invalid slot data length")?;
-        Ok(Slot::from_be_bytes(bytes))
+    fn decode(slice: &[u8]) -> anyhow::Result<Self> {
+        let bytes: [u8; 16] = slice.try_into().context("invalid slot index data length")?;
+        Ok(Self {
+            slot: Slot::from_be_bytes(bytes[..8].try_into().unwrap()),
+            height: Slot::from_be_bytes(bytes[8..].try_into().unwrap()),
+        })
     }
 }
 
 #[derive(Debug)]
-pub struct AccountIndex;
+pub struct AccountIndexKey;
 
-impl ColumnName for AccountIndex {
+impl ColumnName for AccountIndexKey {
     const NAME: &'static str = "account_index";
 }
 
-impl AccountIndex {
-    // pub const fn key(pubkey: &Pubkey) -> [u8; 32] {
-    //     pubkey.to_bytes()
-    // }
+impl AccountIndexKey {
+    pub const fn encode(pubkey: &Pubkey) -> [u8; 32] {
+        pubkey.to_bytes()
+    }
 
     // pub fn decode(slice: &[u8]) -> anyhow::Result<Pubkey> {
     //     Pubkey::try_from(slice).context("failed to create pubkey")
     // }
 }
 
-// #[derive(Debug, Default, Clone)]
-// pub struct AccountIndexValue {
-//     pub lamports: u64,
-//     pub data: Vec<u8>,
-//     pub owner: Pubkey,
-//     pub executable: bool,
-//     pub rent_epoch: Epoch,
-// }
+struct AccountIndexValue;
 
-// impl AccountIndexValue {
-//     pub fn encode_to_vec(&self) -> Vec<u8> {
-//         let mut buf = Vec::with_capacity(
-//             encoded_len_varint(self.lamports)
-//                 + encoded_len_varint(self.data.len() as u64)
-//                 + self.data.len()
-//                 + 32
-//                 + 1
-//                 + encoded_len_varint(self.rent_epoch),
-//         );
-//         self.encode(&mut buf);
-//         buf
-//     }
+impl AccountIndexValue {
+    fn encode(account: &Account, buf: &mut Vec<u8>) {
+        encode_varint(account.lamports, buf);
+        encode_varint(account.data.len() as u64, buf);
+        buf.extend_from_slice(&account.data);
+        buf.extend_from_slice(account.owner.as_ref());
+        buf.push(if account.executable { 1 } else { 0 });
+        encode_varint(account.rent_epoch, buf);
+    }
 
-//     pub fn encode(&self, buf: &mut Vec<u8>) {
-//         encode_varint(self.lamports, buf);
-//         encode_varint(self.data.len() as u64, buf);
-//         buf.extend_from_slice(&self.data);
-//         buf.extend_from_slice(self.owner.as_ref());
-//         buf.push(if self.executable { 1 } else { 0 });
-//         encode_varint(self.rent_epoch, buf);
-//     }
-
-//     // fn decode(mut slice: &[u8]) -> anyhow::Result<Self> {}
-// }
+    // fn decode(mut slice: &[u8]) -> anyhow::Result<Self> {}
+}
 
 #[derive(Debug, Clone)]
 pub struct Rocksdb {
@@ -117,7 +103,11 @@ impl Rocksdb {
         Self::get_cf_options(Some(options), compression)
     }
 
-    pub fn consume_sst_files<P>(&self, files: Vec<P>) -> anyhow::Result<()>
+    pub fn consume_sst_files<P>(
+        &self,
+        files: Vec<P>,
+        slot_info: SlotIndexValue,
+    ) -> anyhow::Result<()>
     where
         P: AsRef<Path>,
     {
@@ -129,12 +119,18 @@ impl Rocksdb {
         ingest_options.set_allow_blocking_flush(false);
         self.db.ingest_external_file_cf_opts(
             self.db
-                .cf_handle(AccountIndex::NAME)
+                .cf_handle(AccountIndexKey::NAME)
                 .expect("should never get an unknown column"),
             &ingest_options,
             files,
         )?;
         info!(elapsed = ?ts.elapsed(), "db created from sst files");
+
+        self.db.put_cf(
+            Self::cf_handle::<SlotIndexKey>(&self.db),
+            "slot",
+            slot_info.encode(),
+        )?;
 
         Ok(())
     }
@@ -177,7 +173,10 @@ impl Rocksdb {
     }
 
     fn cf_descriptors(compression: DBCompressionType) -> Vec<ColumnFamilyDescriptor> {
-        vec![Self::cf_descriptor::<AccountIndex>(compression)]
+        vec![
+            Self::cf_descriptor::<SlotIndexKey>(compression),
+            Self::cf_descriptor::<AccountIndexKey>(compression),
+        ]
     }
 
     fn cf_descriptor<C: ColumnName>(compression: DBCompressionType) -> ColumnFamilyDescriptor {
@@ -189,30 +188,39 @@ impl Rocksdb {
             .expect("should never get an unknown column")
     }
 
-    pub fn get_slot(&self) -> anyhow::Result<Option<Slot>> {
+    pub fn get_state_slot_info(&self) -> anyhow::Result<Option<SlotIndexValue>> {
         self.db
-            .get_cf(Self::cf_handle::<SlotIndex>(&self.db), "slot")?
+            .get_cf(Self::cf_handle::<SlotIndexKey>(&self.db), "slot")?
             .map(|data| SlotIndexValue::decode(&data))
             .transpose()
     }
 
-    // pub fn push_accounts(
-    //     &self,
-    //     accounts: impl Iterator<Item = (Pubkey, AccountIndexValue)>,
-    // ) -> anyhow::Result<()> {
-    //     let mut batch = WriteBatch::with_capacity_bytes(256 * 1024 * 1024); // 256MiB
+    pub fn store_new_state(
+        &self,
+        state_slot_info: SlotIndexValue,
+        accounts: impl Iterator<Item = (Pubkey, Arc<Account>)>,
+    ) -> anyhow::Result<()> {
+        let mut batch = WriteBatch::with_capacity_bytes(256 * 1024 * 1024); // 256MiB
 
-    //     let mut buf = vec![];
-    //     for (pubkey, account) in accounts {
-    //         buf.clear();
-    //         account.encode(&mut buf);
-    //         batch.put_cf(Self::cf_handle::<AccountIndex>(&self.db), pubkey, &buf);
-    //     }
+        batch.put_cf(
+            Self::cf_handle::<SlotIndexKey>(&self.db),
+            "slot",
+            state_slot_info.encode(),
+        );
 
-    //     self.db
-    //         .write(batch)
-    //         .context("failed to write accounts in batch")?;
+        let mut buf = vec![];
+        for (pubkey, account) in accounts {
+            buf.clear();
+            AccountIndexValue::encode(&account, &mut buf);
+            batch.put_cf(
+                Self::cf_handle::<AccountIndexKey>(&self.db),
+                AccountIndexKey::encode(&pubkey),
+                &buf,
+            );
+        }
 
-    //     Ok(())
-    // }
+        self.db
+            .write(batch)
+            .context("failed to write accounts in batch")
+    }
 }

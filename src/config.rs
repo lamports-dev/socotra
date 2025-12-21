@@ -119,12 +119,12 @@ impl Default for ConfigSourceReconnect {
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigBank {
-    #[serde(default = "ConfigBank::channel_size_default")]
-    pub channel_size: usize,
+    #[serde(default = "ConfigBank::updates_channel_size_default")]
+    pub updates_channel_size: usize,
 }
 
 impl ConfigBank {
-    const fn channel_size_default() -> usize {
+    const fn updates_channel_size_default() -> usize {
         32_768
     }
 }
