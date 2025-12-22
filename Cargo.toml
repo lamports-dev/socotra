@@ -1,12 +1,12 @@
 [package]
 name = "socotra"
 version = "0.1.0"
-authors = []
+authors = ["Lamports Dev"]
 edition = "2024"
 description = "Solana accounts state"
-homepage = ""
-repository = ""
-license = ""
+homepage = "https://lamports.dev"
+repository = "https://github.com/lamports-dev/socotra"
+license = "Apache-2.0"
 keywords = ["solana", "rpc"]
 publish = false
 
