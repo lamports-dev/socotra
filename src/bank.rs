@@ -8,11 +8,12 @@ use {
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
     std::{
         collections::{BTreeMap, HashMap, VecDeque, hash_map::Entry as HashMapEntry},
-        sync::Arc,time::Instant
+        sync::Arc,
+        time::Instant,
     },
     tokio::sync::mpsc,
-    tracing::debug,
     tokio_util::sync::CancellationToken,
+    tracing::debug,
 };
 
 #[derive(Debug)]

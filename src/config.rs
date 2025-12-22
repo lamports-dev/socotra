@@ -3,11 +3,7 @@ use {
     richat_shared::tracing::ConfigTracing,
     rocksdb::DBCompressionType,
     serde::Deserialize,
-    std::{
-        fs::read_to_string as read_to_string_sync,
-        path::{Path, PathBuf},
-        time::Duration,
-    },
+    std::{path::PathBuf, time::Duration},
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -19,20 +15,6 @@ pub struct Config {
     pub storage: ConfigStorage,
     pub source: ConfigSource,
     pub bank: ConfigBank,
-}
-
-impl Config {
-    pub fn load_from_file<P: AsRef<Path>>(file: P) -> anyhow::Result<Self> {
-        let config = read_to_string_sync(&file)?;
-        if matches!(
-            file.as_ref().extension().and_then(|e| e.to_str()),
-            Some("yml") | Some("yaml")
-        ) {
-            serde_yaml::from_str(&config).map_err(Into::into)
-        } else {
-            json5::from_str(&config).map_err(Into::into)
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
