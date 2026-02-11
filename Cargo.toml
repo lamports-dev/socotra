@@ -21,16 +21,16 @@ maplit = "1.0.2"
 num_cpus = "1.16.0"
 pin-project = "1.1.10"
 prost = "0.14.1"
-reqwest = { version = "0.12.24", features = ["stream"] }
-richat-client = "7.0.0"
-richat-proto = "7.0.0"
-richat-shared = { version = "7.2.0", features = ["tracing"] }
+reqwest = { version = "0.13.2", features = ["stream"] }
+richat-client = "8.1.0"
+richat-proto = "8.0.0"
+richat-shared = { version = "8.0.0", features = ["tracing"] }
 rocksdb = "0.24.0"
 serde = { version = "1.0.228", features = ["derive"] }
-solana-client = "~3.0.0"
-solana-commitment-config = "~3.0.0"
+solana-rpc-client = "~3.1.0"
+solana-commitment-config = "~3.1.0"
 solana-sdk = "~3.0.0"
-solana-transaction-status-client-types = "~3.0.0"
+solana-transaction-status-client-types = "~3.1.0"
 thiserror = "2.0.17"
 tokio = { version = "1.47.1", features = ["fs", "macros", "rt-multi-thread"] }
 tokio-util = "0.7.16"

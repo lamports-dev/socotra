@@ -9,8 +9,8 @@ use {
     pin_project::pin_project,
     reqwest::{Client, Url, header::CONTENT_TYPE},
     rocksdb::{DBCompressionType, SstFileWriter},
-    solana_client::{nonblocking::rpc_client::RpcClient, rpc_config::RpcBlockConfig},
     solana_commitment_config::CommitmentConfig,
+    solana_rpc_client::{api::config::RpcBlockConfig, nonblocking::rpc_client::RpcClient},
     solana_sdk::{clock::Slot, pubkey::Pubkey},
     solana_transaction_status_client_types::{TransactionDetails, UiTransactionEncoding},
     std::{

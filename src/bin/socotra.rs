@@ -24,7 +24,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let config: Config = richat_shared::config::load_from_file(&args.config)
+    let config: Config = richat_shared::config::load_from_file_sync(&args.config)
         .with_context(|| format!("failed to load config from {}", args.config))?;
 
     // Setup logs
