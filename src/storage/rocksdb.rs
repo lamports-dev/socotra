@@ -7,7 +7,11 @@ use {
         Options, WriteBatch,
     },
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
-    std::{path::Path, sync::Arc, time::Instant},
+    std::{
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::Instant,
+    },
     tracing::info,
 };
 
@@ -39,8 +43,16 @@ impl SlotIndexValue {
     fn decode(slice: &[u8]) -> anyhow::Result<Self> {
         let bytes: [u8; 16] = slice.try_into().context("invalid slot index data length")?;
         Ok(Self {
-            slot: Slot::from_be_bytes(bytes[..8].try_into().unwrap()),
-            height: Slot::from_be_bytes(bytes[8..].try_into().unwrap()),
+            slot: Slot::from_be_bytes(
+                bytes[..8]
+                    .try_into()
+                    .expect("failed to get slot bytes from slice"),
+            ),
+            height: Slot::from_be_bytes(
+                bytes[8..]
+                    .try_into()
+                    .expect("failed to get height bytes from slice"),
+            ),
         })
     }
 }
@@ -56,10 +68,6 @@ impl AccountIndexKey {
     pub const fn encode(pubkey: &Pubkey) -> [u8; 32] {
         pubkey.to_bytes()
     }
-
-    // pub fn decode(slice: &[u8]) -> anyhow::Result<Pubkey> {
-    //     Pubkey::try_from(slice).context("failed to create pubkey")
-    // }
 }
 
 struct AccountIndexValue;
@@ -73,13 +81,13 @@ impl AccountIndexValue {
         buf.push(if account.executable { 1 } else { 0 });
         encode_varint(account.rent_epoch, buf);
     }
-
-    // fn decode(mut slice: &[u8]) -> anyhow::Result<Self> {}
 }
 
 #[derive(Debug, Clone)]
 pub struct Rocksdb {
-    pub db: Arc<DB>,
+    db: Arc<DB>,
+    path: PathBuf,
+    accounts_compression: DBCompressionType,
 }
 
 impl Rocksdb {
@@ -87,52 +95,21 @@ impl Rocksdb {
         std::fs::create_dir_all(&config.path)
             .with_context(|| format!("failed to create db directory: {:?}", config.path))?;
 
+        let accounts_compression = config.compression.into();
+
         let db_options = Self::get_db_options();
-        let cf_descriptors = Self::cf_descriptors(config.compression.into());
+        let cf_descriptors = Self::cf_descriptors(accounts_compression);
 
         let db = Arc::new(
             DB::open_cf_descriptors(&db_options, &config.path, cf_descriptors)
                 .with_context(|| format!("failed to open rocksdb with path: {:?}", config.path))?,
         );
 
-        Ok(Self { db })
-    }
-
-    pub fn get_sst_options(compression: DBCompressionType) -> Options {
-        let options = Self::get_db_options();
-        Self::get_cf_options(Some(options), compression)
-    }
-
-    pub fn consume_sst_files<P>(
-        &self,
-        files: Vec<P>,
-        slot_info: SlotIndexValue,
-    ) -> anyhow::Result<()>
-    where
-        P: AsRef<Path>,
-    {
-        let ts = Instant::now();
-        let mut ingest_options = IngestExternalFileOptions::default();
-        ingest_options.set_move_files(true);
-        ingest_options.set_snapshot_consistency(false);
-        ingest_options.set_allow_global_seqno(false);
-        ingest_options.set_allow_blocking_flush(false);
-        self.db.ingest_external_file_cf_opts(
-            self.db
-                .cf_handle(AccountIndexKey::NAME)
-                .expect("should never get an unknown column"),
-            &ingest_options,
-            files,
-        )?;
-        info!(elapsed = ?ts.elapsed(), "db created from sst files");
-
-        self.db.put_cf(
-            Self::cf_handle::<SlotIndexKey>(&self.db),
-            "slot",
-            slot_info.encode(),
-        )?;
-
-        Ok(())
+        Ok(Self {
+            db,
+            path: config.path,
+            accounts_compression,
+        })
     }
 
     fn get_db_options() -> Options {
@@ -149,6 +126,17 @@ impl Rocksdb {
         options.set_max_total_wal_size(4 * 1024 * 1024 * 1024);
 
         options
+    }
+
+    fn cf_descriptors(compression: DBCompressionType) -> Vec<ColumnFamilyDescriptor> {
+        vec![
+            Self::cf_descriptor::<SlotIndexKey>(DBCompressionType::None),
+            Self::cf_descriptor::<AccountIndexKey>(compression),
+        ]
+    }
+
+    fn cf_descriptor<C: ColumnName>(compression: DBCompressionType) -> ColumnFamilyDescriptor {
+        ColumnFamilyDescriptor::new(C::NAME, Self::get_cf_options(None, compression))
     }
 
     fn get_cf_options(options: Option<Options>, compression: DBCompressionType) -> Options {
@@ -172,25 +160,57 @@ impl Rocksdb {
         options
     }
 
-    fn cf_descriptors(compression: DBCompressionType) -> Vec<ColumnFamilyDescriptor> {
-        vec![
-            Self::cf_descriptor::<SlotIndexKey>(compression),
-            Self::cf_descriptor::<AccountIndexKey>(compression),
-        ]
-    }
-
-    fn cf_descriptor<C: ColumnName>(compression: DBCompressionType) -> ColumnFamilyDescriptor {
-        ColumnFamilyDescriptor::new(C::NAME, Self::get_cf_options(None, compression))
-    }
-
-    fn cf_handle<C: ColumnName>(db: &DB) -> &ColumnFamily {
-        db.cf_handle(C::NAME)
+    fn cf_handle<C: ColumnName>(&self) -> &ColumnFamily {
+        self.db
+            .cf_handle(C::NAME)
             .expect("should never get an unknown column")
+    }
+
+    pub fn sst_config(&self, segment: u8) -> (PathBuf, Options) {
+        let path = self.path.join(format!("{segment:03}.sst"));
+        // let options = Self::get_db_options();
+        // Self::get_cf_options(Some(options), compression)
+        let options = Self::get_cf_options(None, self.accounts_compression);
+        (path, options)
+    }
+
+    pub fn sst_ingest<P>(&self, files: Vec<P>, slot_info: SlotIndexValue) -> anyhow::Result<()>
+    where
+        P: AsRef<Path>,
+    {
+        let ts = Instant::now();
+        let mut ingest_options = IngestExternalFileOptions::default();
+        ingest_options.set_move_files(true);
+        ingest_options.set_snapshot_consistency(false);
+        ingest_options.set_allow_global_seqno(false);
+        ingest_options.set_allow_blocking_flush(false);
+        self.db
+            .ingest_external_file_cf_opts(
+                self.cf_handle::<AccountIndexKey>(),
+                &ingest_options,
+                files,
+            )
+            .context("failed to ingest SST files")?;
+        info!(elapsed = ?ts.elapsed(), "db created from sst files");
+
+        self.db
+            .put_cf(self.cf_handle::<SlotIndexKey>(), "slot", slot_info.encode())
+            .context("failed to store slot value")?;
+
+        Ok(())
+    }
+
+    pub fn destroy(self) {
+        if let Some(db) = Arc::into_inner(self.db) {
+            drop(db);
+            let _ = DB::destroy(&Options::default(), &self.path);
+        }
     }
 
     pub fn get_state_slot_info(&self) -> anyhow::Result<Option<SlotIndexValue>> {
         self.db
-            .get_cf(Self::cf_handle::<SlotIndexKey>(&self.db), "slot")?
+            .get_cf(self.cf_handle::<SlotIndexKey>(), "slot")
+            .context("failed to get slot data")?
             .map(|data| SlotIndexValue::decode(&data))
             .transpose()
     }
@@ -203,17 +223,17 @@ impl Rocksdb {
         let mut batch = WriteBatch::with_capacity_bytes(256 * 1024 * 1024); // 256MiB
 
         batch.put_cf(
-            Self::cf_handle::<SlotIndexKey>(&self.db),
+            self.cf_handle::<SlotIndexKey>(),
             "slot",
             state_slot_info.encode(),
         );
 
-        let mut buf = vec![];
+        let mut buf = Vec::with_capacity(16 * 1024 * 1024); // 16MiB
         for (pubkey, account) in accounts {
             buf.clear();
             AccountIndexValue::encode(&account, &mut buf);
             batch.put_cf(
-                Self::cf_handle::<AccountIndexKey>(&self.db),
+                self.cf_handle::<AccountIndexKey>(),
                 AccountIndexKey::encode(&pubkey),
                 &buf,
             );

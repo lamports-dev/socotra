@@ -11,10 +11,10 @@ keywords = ["solana", "rpc"]
 publish = false
 
 [dependencies]
+ahash = "0.8.12"
 anyhow = "1.0.100"
 bytes = "1.11.0"
 clap = { version = "4.5.30", features = ["derive"] }
-foldhash = "0.2.0"
 futures = "0.3.31"
 humantime-serde = "1.1.1"
 maplit = "1.0.2"

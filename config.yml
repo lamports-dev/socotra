@@ -3,8 +3,6 @@ logs:
 state:
   endpoint: http://127.0.0.1:8899
   segments: 16
-  path: ./db/init-state-sst
-  compression: none
 storage:
   path: ./db
   compression: none # none, snappy, zlib, bz2, lz4, lz4hc, zstd
@@ -30,5 +28,5 @@ source:
     accept: [] # valid: gzip, zstd
     send: [] # valid: gzip, zstd
   x_token: null
-bank:
-  updates_channel_size: 32_768
+banks:
+  updates_channel_size: 512

@@ -14,7 +14,7 @@ pub struct Config {
     pub state_init: ConfigStateInit,
     pub storage: ConfigStorage,
     pub source: ConfigSource,
-    pub bank: ConfigBank,
+    pub banks: ConfigBanks,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -23,15 +23,20 @@ pub struct ConfigStateInit {
     pub endpoint: String,
     #[serde(default = "ConfigStateInit::default_segments")]
     pub segments: u8,
-    pub path: PathBuf,
-    #[serde(default)]
-    pub compression: ConfigStorageRocksdbCompression,
 }
 
 impl ConfigStateInit {
     const fn default_segments() -> u8 {
         16
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigStorage {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub compression: ConfigStorageRocksdbCompression,
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]
@@ -63,14 +68,6 @@ impl From<ConfigStorageRocksdbCompression> for DBCompressionType {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigStorage {
-    pub path: PathBuf,
-    #[serde(default)]
-    pub compression: ConfigStorageRocksdbCompression,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ConfigSource {
     #[serde(default)]
     pub reconnect: Option<ConfigSourceReconnect>,
@@ -98,13 +95,13 @@ impl Default for ConfigSourceReconnect {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigBank {
-    #[serde(default = "ConfigBank::updates_channel_size_default")]
+pub struct ConfigBanks {
+    #[serde(default = "ConfigBanks::updates_channel_size_default")]
     pub updates_channel_size: usize,
 }
 
-impl ConfigBank {
+impl ConfigBanks {
     const fn updates_channel_size_default() -> usize {
-        32_768
+        512
     }
 }

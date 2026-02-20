@@ -1,14 +1,14 @@
 use {
     crate::{
         config::ConfigStateInit,
-        rocksdb::{Rocksdb, SlotIndexValue},
+        storage::rocksdb::{Rocksdb, SlotIndexValue},
     },
     anyhow::Context as _,
     bytes::{Bytes, BytesMut},
     futures::{StreamExt, future::try_join_all, stream::Stream},
     pin_project::pin_project,
     reqwest::{Client, Url, header::CONTENT_TYPE},
-    rocksdb::{DBCompressionType, SstFileWriter},
+    rocksdb::SstFileWriter,
     solana_commitment_config::CommitmentConfig,
     solana_rpc_client::{api::config::RpcBlockConfig, nonblocking::rpc_client::RpcClient},
     solana_sdk::{clock::Slot, pubkey::Pubkey},
@@ -59,6 +59,7 @@ pub async fn get_confirmed_slot(endpoint: String) -> anyhow::Result<SlotIndexVal
 /// # Returns
 /// Vector of paths to created SST files
 pub async fn fetch_confirmed_state(
+    db: &Rocksdb,
     slot: Slot,
     config: &ConfigStateInit,
     shutdown: CancellationToken,
@@ -68,9 +69,9 @@ pub async fn fetch_confirmed_state(
         "segments must be a power of two and <= 64"
     );
 
-    tokio::fs::create_dir_all(&config.path)
-        .await
-        .context("failed to create output directory")?;
+    // tokio::fs::create_dir_all(&config.path)
+    //     .await
+    //     .context("failed to create output directory")?;
 
     let url = Url::parse(&config.endpoint)
         .context("failed to parse endpoint")?
@@ -82,47 +83,60 @@ pub async fn fetch_confirmed_state(
     // segments=64 means first 6 bits: [0x00.., 0x04.., 0x08.., ..., 0xFC..]
     let shift = 8 - config.segments.trailing_zeros() as u8; // bits to shift within first byte
 
-    let sst_files: Vec<_> = (0..config.segments)
-        .map(|segment| config.path.join(format!("{segment:03}.sst")))
-        .collect();
+    let (sst_files, sst_options): (Vec<PathBuf>, Vec<_>) = (0..config.segments)
+        .map(|segment| db.sst_config(segment))
+        .unzip();
 
     let ts = Instant::now();
     let mut handles: Vec<_> = sst_files
         .iter()
+        .zip(sst_options)
         .enumerate()
-        .map(|(segment, file)| {
-            let compression = config.compression.into();
+        .map(|(segment, (path, options))| {
+            let path = path.clone();
             let url = url.clone();
-            let file = file.clone();
-            tokio::spawn(async move {
-                fetch_segment(file, compression, url, segment as u8, shift).await
-            })
+            tokio::spawn(
+                async move { fetch_segment(path, options, url, segment as u8, shift).await },
+            )
         })
         .collect();
 
-    tokio::select! {
+    let result = tokio::select! {
         _ = shutdown.cancelled() => {
             for handle in handles {
                 handle.abort();
             }
-            for file in sst_files {
-                let _ = tokio::fs::remove_file(file).await;
-            }
-            Ok(vec![])
+            None
         }
-        result = try_join_all(&mut handles) => {
-            result?
-                .into_iter()
-                .collect::<anyhow::Result<Vec<_>>>().context("failed to fetch segment")?;
+        results = try_join_all(&mut handles) => {
+            drop(handles);
+            for result in results? {
+                let _: () = result.context("failed to fetch segment")?;
+            }
+            Some(Ok(()))
+        }
+    };
+
+    match result {
+        Some(Ok(())) => {
             info!(elapsed = ?ts.elapsed(), "full stated fetched");
             Ok(sst_files)
+        }
+        other => {
+            for file in &sst_files {
+                let _ = tokio::fs::remove_file(file).await;
+            }
+            match other {
+                Some(Err(e)) => Err(e),
+                _ => Ok(vec![]),
+            }
         }
     }
 }
 
 async fn fetch_segment<P>(
     output: P,
-    compression: DBCompressionType,
+    sst_options: rocksdb::Options,
     mut url: Url,
     segment: u8,
     shift: u8,
@@ -154,9 +168,8 @@ where
         .bytes_stream();
     let mut accounts = AccountsStream::new(stream);
 
-    let options = Rocksdb::get_sst_options(compression);
-    let mut sst = SstFileWriter::create(&options);
-    sst.open(output)?;
+    let mut sst = SstFileWriter::create(&sst_options);
+    sst.open(&output)?;
     loop {
         match accounts.next().await {
             Some(Ok((pubkey, account))) => sst.put(pubkey, account)?,

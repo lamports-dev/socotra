@@ -2,7 +2,11 @@ use {
     anyhow::Context,
     clap::Parser,
     futures::future::FutureExt,
-    socotra::{bank, config::Config, grpc, rocksdb::Rocksdb},
+    socotra::{
+        config::Config,
+        source,
+        storage::{blocks, rocksdb::Rocksdb},
+    },
     std::future::ready,
     tokio::sync::mpsc,
     tokio_util::sync::CancellationToken,
@@ -48,20 +52,22 @@ async fn main() -> anyhow::Result<()> {
             (value, ready(Ok(db)).boxed())
         }
         None => {
-            let value = socotra::rpc::get_confirmed_slot(config.state_init.endpoint.clone())
+            let value = source::rpc::get_confirmed_slot(config.state_init.endpoint.clone())
                 .await
                 .context("failed to get confirmed slot")?;
             info!(slot = value.slot, "latest stored slot (rpc)");
 
-            let config = config.state_init.clone();
+            let config = config.state_init;
             let shutdown = shutdown.clone();
             let fetch_state_fut = async move {
                 let sst_files =
-                    socotra::rpc::fetch_confirmed_state(value.slot, &config, shutdown.clone())
+                    source::rpc::fetch_confirmed_state(&db, value.slot, &config, shutdown.clone())
                         .await?;
-                if !shutdown.is_cancelled() {
-                    db.consume_sst_files(sst_files, value)
-                        .context("failed to consume sst files")?;
+                if !shutdown.is_cancelled()
+                    && let Err(error) = db.sst_ingest(sst_files, value)
+                {
+                    db.destroy();
+                    return Err(error).context("failed to consume sst files");
                 }
                 Ok::<_, anyhow::Error>(db)
             };
@@ -70,15 +76,15 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let (update_tx, update_rx) = mpsc::channel(config.bank.updates_channel_size);
+    let (update_tx, update_rx) = mpsc::channel(config.banks.updates_channel_size);
     tokio::try_join!(
-        grpc::subscribe(
+        source::grpc::subscribe(
             update_tx,
             config.source,
             latest_stored_slot.slot + 1,
             shutdown.clone()
         ),
-        bank::start(db_ready_fut, latest_stored_slot, update_rx, shutdown)
+        blocks::start(db_ready_fut, latest_stored_slot, update_rx, shutdown)
     )?;
     Ok(())
 }

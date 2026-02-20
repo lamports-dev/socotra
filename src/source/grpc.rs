@@ -1,5 +1,6 @@
 use {
     crate::config::ConfigSource,
+    ahash::HashMap,
     anyhow::Context,
     futures::stream::StreamExt,
     maplit::hashmap,
@@ -10,7 +11,10 @@ use {
         SubscribeRequestFilterSlots, subscribe_update::UpdateOneof,
     },
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
-    std::sync::Arc,
+    std::{
+        collections::{BTreeMap, hash_map::Entry as HashMapEntry},
+        sync::Arc,
+    },
     tokio::{sync::mpsc, time::sleep},
     tokio_util::sync::CancellationToken,
     tonic::Code,
@@ -19,21 +23,31 @@ use {
 
 #[derive(Debug)]
 pub enum GeyserMessage {
-    Account {
-        pubkey: Pubkey,
-        slot: Slot,
-        write_version: u64,
-        account: Arc<Account>,
-    },
-    BlockMeta {
-        slot: Slot,
-        height: Slot,
-    },
+    // Created on every connect
+    Reset,
+    // Confirmed, Finalized, Dead
     Slot {
         slot: Slot,
         status: SlotStatus,
     },
-    Reset,
+    // Created on BlockMeta (means processed)
+    Block {
+        slot: Slot,
+        height: Slot,
+        accounts: HashMap<Pubkey, Arc<Account>>,
+    },
+    // Created when account update received after BlockMeta
+    AccountAfterBlock {
+        slot: Slot,
+        pubkey: Pubkey,
+        account: Arc<Account>,
+    },
+}
+
+#[derive(Debug, Default)]
+struct SlotInfo {
+    height: Option<Slot>,
+    accounts: HashMap<Pubkey, (u64, Arc<Account>)>,
 }
 
 pub async fn subscribe(
@@ -73,15 +87,15 @@ pub async fn subscribe(
             "update channel is closed"
         );
 
+        let mut slots = BTreeMap::<Slot, SlotInfo>::new();
         loop {
             let update = tokio::select! {
                 _ = shutdown.cancelled() => break,
                 result = stream.next() => match result {
                     Some(Ok(update)) => update,
                     Some(Err(error)) => {
-                        if let ReceiveError::Status(status) = &error
-                            && status.code() == Code::InvalidArgument
-                            && status.message().contains("replay")
+                        if matches!(&error, ReceiveError::Status(status)
+                            if (status.code() == Code::InvalidArgument && status.message().contains("replay")) || status.code() == Code::DataLoss)
                         {
                             anyhow::bail!("failed to replay from_slot: {replay_from_slot}")
                         } else {
@@ -98,6 +112,10 @@ pub async fn subscribe(
 
             let msg = match update.update_oneof {
                 Some(UpdateOneof::Account(update)) => {
+                    if update.slot < replay_from_slot {
+                        continue;
+                    }
+
                     let Some(account) = update.account else {
                         error!("missed account update");
                         break;
@@ -113,32 +131,87 @@ pub async fn subscribe(
                         break;
                     };
 
-                    GeyserMessage::Account {
-                        pubkey,
-                        slot: update.slot,
-                        write_version: account.write_version,
-                        account: Arc::new(Account {
-                            lamports: account.lamports,
-                            data: account.data,
-                            owner,
-                            executable: account.executable,
-                            rent_epoch: account.rent_epoch,
-                        }),
+                    let write_version = account.write_version;
+                    let account = Arc::new(Account {
+                        lamports: account.lamports,
+                        data: account.data,
+                        owner,
+                        executable: account.executable,
+                        rent_epoch: account.rent_epoch,
+                    });
+                    let mut msg_account = None;
+
+                    let slot_info = slots.entry(update.slot).or_default();
+                    match slot_info.accounts.entry(pubkey) {
+                        HashMapEntry::Occupied(mut entry) => {
+                            let entry = entry.get_mut();
+                            if write_version > entry.0 {
+                                msg_account = Some(Arc::clone(&account));
+                                *entry = (write_version, account);
+                            }
+                        }
+                        HashMapEntry::Vacant(entry) => {
+                            msg_account = Some(Arc::clone(&account));
+                            entry.insert((write_version, account));
+                        }
+                    }
+
+                    if let Some(account) = msg_account {
+                        GeyserMessage::AccountAfterBlock {
+                            slot: update.slot,
+                            pubkey,
+                            account,
+                        }
+                    } else {
+                        continue;
                     }
                 }
                 Some(UpdateOneof::BlockMeta(update)) => {
+                    if update.slot < replay_from_slot {
+                        continue;
+                    }
+
                     let Some(height) = update.block_height.map(|value| value.block_height) else {
                         continue;
                     };
 
-                    GeyserMessage::BlockMeta {
+                    let slot_info = slots.entry(update.slot).or_default();
+                    if slot_info.height.is_some() {
+                        continue;
+                    }
+                    slot_info.height = Some(height);
+
+                    GeyserMessage::Block {
                         slot: update.slot,
                         height,
+                        accounts: slot_info
+                            .accounts
+                            .iter()
+                            .map(|(pk, (_write_version, account))| (*pk, Arc::clone(account)))
+                            .collect(),
                     }
                 }
                 Some(UpdateOneof::Slot(update)) => {
-                    if update.status() == SlotStatus::SlotConfirmed {
+                    if update.slot < replay_from_slot
+                        || !matches!(
+                            update.status(),
+                            SlotStatus::SlotConfirmed
+                                | SlotStatus::SlotFinalized
+                                | SlotStatus::SlotDead
+                        )
+                    {
+                        continue;
+                    }
+
+                    if update.status() == SlotStatus::SlotFinalized {
                         replay_from_slot = replay_from_slot.max(update.slot + 1);
+
+                        loop {
+                            match slots.keys().next().copied() {
+                                Some(slot) if slot < update.slot => slots.remove(&slot),
+                                _ => break,
+                            };
+                        }
                     }
 
                     GeyserMessage::Slot {
