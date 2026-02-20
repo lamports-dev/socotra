@@ -1,6 +1,6 @@
 use {
     richat_client::grpc::ConfigGrpcClient,
-    richat_shared::{config::ConfigTokio, tracing::ConfigTracing},
+    richat_shared::config::ConfigTokio,
     rocksdb::DBCompressionType,
     serde::Deserialize,
     std::{path::PathBuf, time::Duration},
@@ -10,11 +10,18 @@ use {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
-    pub logs: ConfigTracing,
+    pub monitoring: ConfigMonitoring,
     pub state_init: ConfigStateInit,
     pub storage: ConfigStorage,
     pub source: ConfigSource,
     pub banks: ConfigBanks,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ConfigMonitoring {
+    pub logs_json: bool,
+    pub otlp_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

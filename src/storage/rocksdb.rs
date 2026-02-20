@@ -12,7 +12,7 @@ use {
         sync::Arc,
         time::Instant,
     },
-    tracing::info,
+    tracing::{Span, info, info_span, instrument},
 };
 
 pub trait ColumnName {
@@ -215,11 +215,13 @@ impl Rocksdb {
             .transpose()
     }
 
+    #[instrument(name = "store_block", skip_all, fields(slot = state_slot_info.slot, accounts))]
     pub fn store_new_state(
         &self,
         state_slot_info: SlotIndexValue,
         accounts: impl Iterator<Item = (Pubkey, Arc<Account>)>,
     ) -> anyhow::Result<()> {
+        let span = info_span!("generate_batch").entered();
         let mut batch = WriteBatch::with_capacity_bytes(256 * 1024 * 1024); // 256MiB
 
         batch.put_cf(
@@ -228,6 +230,7 @@ impl Rocksdb {
             state_slot_info.encode(),
         );
 
+        let mut num_accounts = 0u64;
         let mut buf = Vec::with_capacity(16 * 1024 * 1024); // 16MiB
         for (pubkey, account) in accounts {
             buf.clear();
@@ -237,10 +240,16 @@ impl Rocksdb {
                 AccountIndexKey::encode(&pubkey),
                 &buf,
             );
+            num_accounts += 1;
         }
+        drop(span);
+        Span::current().record("accounts", num_accounts);
 
-        self.db
-            .write(batch)
-            .context("failed to write accounts in batch")
+        {
+            let _span = info_span!("write_batch", size = batch.size_in_bytes()).entered();
+            self.db
+                .write(batch)
+                .context("failed to write accounts in batch")
+        }
     }
 }

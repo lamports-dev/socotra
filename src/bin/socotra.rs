@@ -2,6 +2,8 @@ use {
     anyhow::Context,
     clap::Parser,
     futures::future::FutureExt,
+    opentelemetry::trace::TracerProvider,
+    opentelemetry_otlp::WithExportConfig,
     signal_hook::{
         consts::{SIGINT, SIGTERM},
         iterator::Signals,
@@ -13,12 +15,14 @@ use {
     },
     std::{
         future::ready,
+        io::{self, IsTerminal},
         thread::{self, sleep},
         time::Duration,
     },
     tokio::sync::mpsc,
     tokio_util::sync::CancellationToken,
-    tracing::{info, warn},
+    tracing::{info, level_filters::LevelFilter, warn},
+    tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt},
 };
 
 #[derive(Debug, Parser)]
@@ -50,7 +54,10 @@ fn try_main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to load config from {}", args.config))?;
 
     // Setup logs
-    richat_shared::tracing::setup(config.logs.json)?;
+    let otel_runtime = setup_tracing(
+        config.monitoring.logs_json,
+        config.monitoring.otlp_endpoint.as_deref(),
+    )?;
 
     // Exit if we only check the config
     if args.check {
@@ -157,5 +164,98 @@ fn try_main() -> anyhow::Result<()> {
         sleep(Duration::from_millis(25));
     }
 
+    // Flush remaining OTLP spans while the runtime is still alive
+    if let Some(otel) = otel_runtime {
+        let _guard = otel.runtime.enter();
+        let _ = otel.tracer_provider.shutdown();
+    }
+
     Ok(())
+}
+
+struct OtelState {
+    runtime: tokio::runtime::Runtime,
+    tracer_provider: opentelemetry_sdk::trace::SdkTracerProvider,
+}
+
+fn setup_tracing(
+    logs_json: bool,
+    otlp_endpoint: Option<&str>,
+) -> anyhow::Result<Option<OtelState>> {
+    // Always add a console layer
+    let io_layer = tracing_subscriber::fmt::layer().with_line_number(true);
+    let io_layer_ansi = if logs_json {
+        io_layer.json().boxed()
+    } else {
+        let is_atty = io::stdout().is_terminal() && io::stderr().is_terminal();
+        io_layer.with_ansi(is_atty).boxed()
+    };
+
+    // Filter directives
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    // Optional OTLP layer for exporting spans via gRPC.
+    // The batch exporter spawns a Tokio task, so we need a runtime.
+    // The runtime must outlive the tracer provider, so we return it to the caller.
+    let (otel_layer, otel_state) = if let Some(endpoint) = otlp_endpoint {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(1)
+            .thread_name("socOtel")
+            .build()
+            .context("failed to create OTLP runtime")?;
+        let _guard = runtime.enter();
+
+        let exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(endpoint)
+            .build()?;
+
+        let batch_processor = opentelemetry_sdk::trace::BatchSpanProcessor::builder(exporter)
+            .with_batch_config(
+                opentelemetry_sdk::trace::BatchConfigBuilder::default()
+                    // Internal buffer capacity (default: 2048). Spans are dropped when full.
+                    .with_max_queue_size(65536)
+                    // Spans per gRPC export call (default: 512). Larger batches = fewer RPCs.
+                    .with_max_export_batch_size(4096)
+                    // Flush interval (default: 5s). Shorter delay drains the queue faster.
+                    .with_scheduled_delay(Duration::from_secs(1))
+                    .build(),
+            )
+            .build();
+
+        let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_span_processor(batch_processor)
+            .with_resource(
+                opentelemetry_sdk::Resource::builder()
+                    .with_service_name("socotra")
+                    .build(),
+            )
+            .build();
+
+        opentelemetry::global::set_tracer_provider(tracer_provider.clone());
+
+        let tracer = tracer_provider.tracer("socotra");
+        (
+            Some(tracing_opentelemetry::layer().with_tracer(tracer)),
+            Some(OtelState {
+                runtime,
+                tracer_provider,
+            }),
+        )
+    } else {
+        (None, None)
+    };
+
+    // Construct the subscriber with all layers
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(io_layer_ansi)
+        .with(otel_layer)
+        .try_init()
+        .context("failed to set global default subscriber")?;
+
+    Ok(otel_state)
 }

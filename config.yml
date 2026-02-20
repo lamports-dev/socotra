@@ -1,5 +1,6 @@
-logs:
-  json: false
+monitoring:
+  logs_json: false
+  otlp_endpoint:
 state:
   endpoint: http://127.0.0.1:8899
   segments: 16
