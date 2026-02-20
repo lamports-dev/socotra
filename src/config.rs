@@ -27,11 +27,22 @@ pub struct Config {
     pub rpc: ConfigRpc,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ConfigMonitoring {
     pub logs_json: bool,
     pub otlp_endpoint: Option<String>,
+    pub prometheus_endpoint: SocketAddr,
+}
+
+impl Default for ConfigMonitoring {
+    fn default() -> Self {
+        Self {
+            logs_json: false,
+            otlp_endpoint: None,
+            prometheus_endpoint: SocketAddr::from(([127, 0, 0, 1], 9001)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -84,25 +95,24 @@ impl From<ConfigStorageRocksdbCompression> for DBCompressionType {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub struct ConfigBanks {
-    #[serde(default = "ConfigBanks::updates_channel_size_default")]
     pub updates_channel_size: usize,
 }
 
-impl ConfigBanks {
-    const fn updates_channel_size_default() -> usize {
-        512
+impl Default for ConfigBanks {
+    fn default() -> Self {
+        Self {
+            updates_channel_size: 512,
+        }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
 pub struct ConfigSource {
     /// Tokio runtime for Source
-    #[serde(default)]
     pub tokio: ConfigTokio,
-    #[serde(default)]
     pub reconnect: Option<ConfigSourceReconnect>,
     #[serde(flatten)]
     pub config: ConfigGrpcClient,
@@ -127,46 +137,40 @@ impl Default for ConfigSourceReconnect {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub struct ConfigRpc {
     /// Endpoint of RPC service
-    #[serde(default = "ConfigRpc::default_endpoint")]
     pub endpoint: SocketAddr,
     /// Tokio runtime for RPC
-    #[serde(default)]
     pub tokio: ConfigTokio,
     /// Max body size limit in bytes
-    #[serde(
-        default = "ConfigRpc::default_body_limit",
-        deserialize_with = "ConfigRpc::deserialize_humansize_usize"
-    )]
+    #[serde(deserialize_with = "ConfigRpc::deserialize_humansize_usize")]
     pub body_limit: usize,
     /// Extra headers added to response
-    #[serde(default, deserialize_with = "ConfigRpc::deserialize_extra_headers")]
+    #[serde(deserialize_with = "ConfigRpc::deserialize_extra_headers")]
     pub extra_headers: HeaderMap,
     /// Request timeout
-    #[serde(
-        default = "ConfigRpc::default_request_timeout",
-        with = "humantime_serde"
-    )]
+    #[serde(with = "humantime_serde")]
     pub request_timeout: Duration,
     /// Max number of requests in the queue
-    #[serde(
-        default = "ConfigRpc::default_request_channel_capacity",
-        deserialize_with = "deserialize_num_str"
-    )]
+    #[serde(deserialize_with = "deserialize_num_str")]
     pub request_channel_capacity: usize,
 }
 
+impl Default for ConfigRpc {
+    fn default() -> Self {
+        Self {
+            endpoint: SocketAddr::from(([127, 0, 0, 1], 9000)),
+            tokio: Default::default(),
+            body_limit: 10 * 1024,
+            extra_headers: Default::default(),
+            request_timeout: Duration::from_secs(60),
+            request_channel_capacity: 4096,
+        }
+    }
+}
+
 impl ConfigRpc {
-    fn default_endpoint() -> SocketAddr {
-        SocketAddr::from(([127, 0, 0, 1], 9000))
-    }
-
-    const fn default_body_limit() -> usize {
-        10 * 1024 // 10KiB
-    }
-
     fn deserialize_humansize<'de, D>(deserializer: D) -> Result<u64, D::Error>
     where
         D: Deserializer<'de>,
@@ -199,13 +203,5 @@ impl ConfigRpc {
             );
         }
         Ok(map)
-    }
-
-    const fn default_request_timeout() -> Duration {
-        Duration::from_secs(60)
-    }
-
-    const fn default_request_channel_capacity() -> usize {
-        4096
     }
 }

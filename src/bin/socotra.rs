@@ -1,7 +1,7 @@
 use {
     anyhow::Context,
     clap::Parser,
-    futures::future::FutureExt,
+    futures::future::{FutureExt, TryFutureExt},
     opentelemetry::trace::TracerProvider,
     opentelemetry_otlp::WithExportConfig,
     signal_hook::{
@@ -10,7 +10,7 @@ use {
     },
     socotra::{
         config::Config,
-        rpc, source,
+        metrics, rpc, source,
         storage::{blocks, rocksdb::Rocksdb},
     },
     std::{
@@ -53,11 +53,12 @@ fn try_main() -> anyhow::Result<()> {
     let config: Config = richat_shared::config::load_from_file_sync(&args.config)
         .with_context(|| format!("failed to load config from {}", args.config))?;
 
-    // Setup logs
+    // Setup monitoring
     let otel_runtime = setup_tracing(
         config.monitoring.logs_json,
         config.monitoring.otlp_endpoint.as_deref(),
     )?;
+    let metrics_handle = metrics::setup()?;
 
     // Exit if we only check the config
     if args.check {
@@ -124,7 +125,20 @@ fn try_main() -> anyhow::Result<()> {
                         latest_stored_slot.slot + 1,
                         shutdown.clone()
                     ),
-                    blocks::start(db_ready_fut, latest_stored_slot, update_rx, shutdown)
+                    blocks::start(
+                        db_ready_fut,
+                        latest_stored_slot,
+                        update_rx,
+                        shutdown.clone()
+                    ),
+                    metrics::spawn_server(
+                        config.monitoring.prometheus_endpoint,
+                        metrics_handle,
+                        shutdown.cancelled_owned(),
+                    )
+                    .await?
+                    .map_err(anyhow::Error::from)
+                    .boxed(),
                 )?;
 
                 Ok::<(), anyhow::Error>(())
