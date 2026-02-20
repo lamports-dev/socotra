@@ -1,6 +1,6 @@
 use {
     anyhow::Context,
-    metrics::{counter, describe_counter},
+    metrics::{counter, describe_counter, describe_histogram},
     metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle},
     richat_shared::jsonrpc::metrics::{
         RPC_REQUESTS_DURATION_SECONDS, describe as describe_jsonrpc_metrics,
@@ -12,6 +12,8 @@ use {
     },
 };
 
+pub const WRITE_BLOCK_SYNC_SECONDS: &str = "write_block_sync_seconds";
+
 pub fn setup() -> anyhow::Result<PrometheusHandle> {
     let default_buckets = &[
         0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
@@ -21,6 +23,10 @@ pub fn setup() -> anyhow::Result<PrometheusHandle> {
         .set_buckets_for_metric(
             Matcher::Full(RPC_REQUESTS_DURATION_SECONDS.to_owned()),
             default_buckets,
+        )?
+        .set_buckets_for_metric(
+            Matcher::Full(WRITE_BLOCK_SYNC_SECONDS.to_owned()),
+            &[0.005, 0.01, 0.02, 0.03, 0.04, 0.05, 0.075, 0.1, 0.2, 0.4],
         )?
         .install_recorder()
         .context("failed to install prometheus exporter")?;
@@ -39,6 +45,8 @@ pub fn setup() -> anyhow::Result<PrometheusHandle> {
         "version" => env!("CARGO_PKG_VERSION"),
     )
     .absolute(1);
+
+    describe_histogram!(WRITE_BLOCK_SYNC_SECONDS, "Write block sync time");
 
     Ok(handle)
 }

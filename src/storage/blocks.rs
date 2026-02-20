@@ -1,9 +1,12 @@
 use {
     crate::{
+        metrics::WRITE_BLOCK_SYNC_SECONDS,
         source::grpc::GeyserMessage,
         storage::rocksdb::{Rocksdb, SlotIndexValue},
     },
     ahash::HashMap,
+    metrics::histogram,
+    richat_metrics::duration_to_seconds,
     richat_proto::geyser::SlotStatus,
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
     std::{
@@ -137,7 +140,9 @@ fn process_message(
                     *latest_stored_slot = SlotIndexValue { slot, height };
 
                     // store new slot
+                    let ts = Instant::now();
                     db.store_new_state(*latest_stored_slot, block.accounts.into_iter())?;
+                    histogram!(WRITE_BLOCK_SYNC_SECONDS).record(duration_to_seconds(ts.elapsed()));
                 }
                 _ => {}
             }
