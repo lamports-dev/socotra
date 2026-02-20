@@ -7,6 +7,9 @@ storage:
   path: ./db
   compression: none # none, snappy, zlib, bz2, lz4, lz4hc, zstd
 source:
+  tokio:
+    worker_threads: null # Number of threads in Tokio runtime, by default all available cores
+    affinity: null # Pin threads to specific CPUs, optional (taskset syntax)
   # reconnect:
   #   backoff_init: 100ms
   #   backoff_max: 1s

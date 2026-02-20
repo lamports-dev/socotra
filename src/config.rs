@@ -1,6 +1,6 @@
 use {
     richat_client::grpc::ConfigGrpcClient,
-    richat_shared::tracing::ConfigTracing,
+    richat_shared::{config::ConfigTokio, tracing::ConfigTracing},
     rocksdb::DBCompressionType,
     serde::Deserialize,
     std::{path::PathBuf, time::Duration},
@@ -69,6 +69,8 @@ impl From<ConfigStorageRocksdbCompression> for DBCompressionType {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigSource {
+    #[serde(default)]
+    pub tokio: ConfigTokio,
     #[serde(default)]
     pub reconnect: Option<ConfigSourceReconnect>,
     #[serde(flatten)]
