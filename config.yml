@@ -34,3 +34,15 @@ source:
   x_token: null
 banks:
   updates_channel_size: 512
+rpc:
+  endpoint: 127.0.0.1:9000 # RPC endpoint, implement same JSON-RPC API as Agave
+  tokio:
+    worker_threads: null # Number of threads in Tokio runtime, by default all available cores
+    affinity: null # Pin threads to specified CPUs, optional
+  body_limit: 10KiB # JSON-RPC body limit
+  extra_headers: # Extra headers added to response
+    # access-control-allow-origin: "*"
+    # access-control-max-age: 86400
+    # access-control-allow-methods: OPTIONS, POST
+  request_timeout: 60s
+  request_channel_capacity: 4_096 # Queue size of requests to read threads (be aware, one JSON-RPC request can contain multiple requests)

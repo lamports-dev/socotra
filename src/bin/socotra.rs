@@ -10,7 +10,7 @@ use {
     },
     socotra::{
         config::Config,
-        source,
+        rpc, source,
         storage::{blocks, rocksdb::Rocksdb},
     },
     std::{
@@ -69,9 +69,10 @@ fn try_main() -> anyhow::Result<()> {
     let db = Rocksdb::open(config.storage)?;
 
     // Shutdown
-    let mut threads = Vec::<(String, _)>::with_capacity(4);
+    let mut threads = Vec::<(String, _)>::with_capacity(2);
     let shutdown = CancellationToken::new();
 
+    // Source
     let jh = thread::Builder::new().name("socSource".to_owned()).spawn({
         let shutdown = shutdown.clone();
         let runtime = config.source.tokio.clone().build_runtime("socSourceRt")?;
@@ -131,6 +132,19 @@ fn try_main() -> anyhow::Result<()> {
         }
     })?;
     threads.push(("socSource".to_owned(), Some(jh)));
+
+    // RPC
+    let jh = thread::Builder::new().name("socRpc".to_owned()).spawn({
+        let shutdown = shutdown.clone();
+        move || {
+            let runtime = config.rpc.tokio.clone().build_runtime("socRpcRt")?;
+            runtime.block_on(async move {
+                rpc::spawn(config.rpc, shutdown).await?.await?;
+                Ok::<(), anyhow::Error>(())
+            })
+        }
+    })?;
+    threads.push(("socRpc".to_owned(), Some(jh)));
 
     // Shutdown loop
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
