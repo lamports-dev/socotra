@@ -1,5 +1,7 @@
 use {
-    crate::config::ConfigRpc,
+    crate::{
+        config::ConfigRpc, rpc::jsonrpc::create_request_processor, storage::blocks::StoredSlots,
+    },
     bytes::Bytes,
     http_body_util::{BodyExt, Empty as BodyEmpty},
     hyper::{Request, Response, StatusCode, body::Incoming as BodyIncoming, service::service_fn},
@@ -7,19 +9,23 @@ use {
         rt::tokio::{TokioExecutor, TokioIo},
         server::conn::auto::Builder as ServerBuilder,
     },
-    tokio::{net::TcpListener, task::JoinHandle},
+    std::sync::Arc,
+    tokio::net::TcpListener,
     tokio_util::sync::CancellationToken,
     tracing::{debug, error, info},
 };
 
 pub async fn spawn(
     config: ConfigRpc,
+    stored_slots: Arc<StoredSlots>,
     shutdown: CancellationToken,
-) -> anyhow::Result<JoinHandle<()>> {
+) -> anyhow::Result<()> {
     let listener = TcpListener::bind(config.endpoint).await?;
     info!("start server at: {}", config.endpoint);
 
-    let jh = tokio::spawn(async move {
+    let jsonrpc_processor = Arc::new(create_request_processor(config, stored_slots));
+
+    tokio::spawn(async move {
         let http = ServerBuilder::new(TokioExecutor::new());
         let graceful = hyper_util::server::graceful::GracefulShutdown::new();
 
@@ -39,11 +45,13 @@ pub async fn spawn(
             };
 
             let service = service_fn({
+                let jsonrpc_processor = Arc::clone(&jsonrpc_processor);
                 move |req: Request<BodyIncoming>| {
+                    let jsonrpc_processor = Arc::clone(&jsonrpc_processor);
                     async move {
                         // JSON-RPC
                         if req.uri().path() == "/" {
-                            todo!()
+                            return jsonrpc_processor.on_request(req).await;
                         }
 
                         Response::builder()
@@ -65,7 +73,7 @@ pub async fn spawn(
 
         drop(listener);
         graceful.shutdown().await;
-    });
-
-    Ok(jh)
+    })
+    .await
+    .map_err(Into::into)
 }

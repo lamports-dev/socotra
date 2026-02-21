@@ -16,6 +16,7 @@ use {
     std::{
         future::ready,
         io::{self, IsTerminal},
+        sync::Arc,
         thread::{self, sleep},
         time::Duration,
     },
@@ -68,6 +69,7 @@ fn try_main() -> anyhow::Result<()> {
 
     // Open storage
     let db = Rocksdb::open(config.storage)?;
+    let stored_slots = Arc::new(blocks::StoredSlots::default());
 
     // Shutdown
     let mut threads = Vec::<(String, _)>::with_capacity(2);
@@ -75,8 +77,9 @@ fn try_main() -> anyhow::Result<()> {
 
     // Source
     let jh = thread::Builder::new().name("socSource".to_owned()).spawn({
-        let shutdown = shutdown.clone();
         let runtime = config.source.tokio.clone().build_runtime("socSourceRt")?;
+        let stored_slots = Arc::clone(&stored_slots);
+        let shutdown = shutdown.clone();
         move || {
             runtime.block_on(async move {
                 let (latest_stored_slot, db_ready_fut) = match db
@@ -118,7 +121,7 @@ fn try_main() -> anyhow::Result<()> {
                 };
 
                 let (update_tx, update_rx) = mpsc::channel(config.banks.updates_channel_size);
-                tokio::try_join!(
+                let _: ((), (), ()) = tokio::try_join!(
                     source::grpc::subscribe(
                         update_tx,
                         config.source,
@@ -128,6 +131,7 @@ fn try_main() -> anyhow::Result<()> {
                     blocks::start(
                         db_ready_fut,
                         latest_stored_slot,
+                        stored_slots,
                         update_rx,
                         shutdown.clone()
                     ),
@@ -153,7 +157,7 @@ fn try_main() -> anyhow::Result<()> {
         move || {
             let runtime = config.rpc.tokio.clone().build_runtime("socRpcRt")?;
             runtime.block_on(async move {
-                rpc::spawn(config.rpc, shutdown).await?.await?;
+                let _: () = rpc::server::spawn(config.rpc, stored_slots, shutdown).await?;
                 Ok::<(), anyhow::Error>(())
             })
         }

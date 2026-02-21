@@ -11,12 +11,22 @@ use {
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
     std::{
         collections::{BTreeMap, VecDeque},
-        sync::Arc,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
         time::{Duration, Instant},
     },
     tokio::sync::mpsc,
     tokio_util::sync::CancellationToken,
 };
+
+#[derive(Debug, Default)]
+pub struct StoredSlots {
+    pub processed: AtomicU64,
+    pub confirmed: AtomicU64,
+    pub finalized: AtomicU64,
+}
 
 #[derive(Debug)]
 struct Block {
@@ -40,6 +50,7 @@ impl Default for Block {
 pub async fn start(
     mut db_ready_fut: impl Future<Output = anyhow::Result<Rocksdb>> + Unpin,
     mut latest_stored_slot: SlotIndexValue,
+    stored_slots: Arc<StoredSlots>,
     mut update_rx: mpsc::Receiver<GeyserMessage>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
@@ -64,7 +75,13 @@ pub async fn start(
             let ts = Instant::now();
             while ts.elapsed() < Duration::from_millis(400) {
                 match messages.pop_front() {
-                    Some(msg) => process_message(&db, &mut latest_stored_slot, &mut slots, msg)?,
+                    Some(msg) => process_message(
+                        &db,
+                        &mut latest_stored_slot,
+                        &stored_slots,
+                        &mut slots,
+                        msg,
+                    )?,
                     None => break,
                 }
             }
@@ -73,7 +90,7 @@ pub async fn start(
         tokio::select! {
             msg = update_rx.recv() => match msg {
                 Some(msg) => if messages.is_empty() {
-                    process_message(&db, &mut latest_stored_slot, &mut slots, msg)?;
+                    process_message(&db, &mut latest_stored_slot, &stored_slots, &mut slots, msg)?;
                 } else {
                     messages.push_back(msg)
                 },
@@ -92,6 +109,7 @@ pub async fn start(
 fn process_message(
     db: &Rocksdb,
     latest_stored_slot: &mut SlotIndexValue,
+    stored_slots: &StoredSlots,
     slots: &mut BTreeMap<Slot, Block>,
     msg: GeyserMessage,
 ) -> anyhow::Result<()> {
@@ -110,8 +128,12 @@ fn process_message(
                 SlotStatus::SlotDead => {
                     block.dead = true;
                 }
+                SlotStatus::SlotProcessed => {
+                    stored_slots.processed.store(slot, Ordering::Relaxed);
+                }
                 SlotStatus::SlotConfirmed => {
                     block.confirmed = true;
+                    stored_slots.confirmed.store(slot, Ordering::Relaxed);
                 }
                 SlotStatus::SlotFinalized => {
                     // remove old slots
@@ -143,6 +165,7 @@ fn process_message(
                     let ts = Instant::now();
                     db.store_new_state(*latest_stored_slot, block.accounts.into_iter())?;
                     histogram!(WRITE_BLOCK_SYNC_SECONDS).record(duration_to_seconds(ts.elapsed()));
+                    stored_slots.finalized.store(slot, Ordering::Relaxed);
                 }
                 _ => {}
             }
