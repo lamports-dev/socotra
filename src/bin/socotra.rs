@@ -16,11 +16,11 @@ use {
     std::{
         future::ready,
         io::{self, IsTerminal},
-        sync::Arc,
+        sync::{Arc, mpsc as mpsc_sync},
         thread::{self, sleep},
         time::Duration,
     },
-    tokio::sync::mpsc,
+    tokio::sync::{broadcast, mpsc as mpsc_async},
     tokio_util::sync::CancellationToken,
     tracing::{info, level_filters::LevelFilter, warn},
     tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt},
@@ -68,8 +68,11 @@ fn try_main() -> anyhow::Result<()> {
     }
 
     // Open storage
-    let db = Rocksdb::open(config.storage)?;
-    let stored_slots = Arc::new(blocks::StoredSlots::default());
+    let storage_init_config = config.storage.init;
+    let storage_blocks_config = config.storage.blocks;
+    let db = Rocksdb::open(config.storage.path, config.storage.compression)?;
+    let (req_tx, req_rx) = mpsc_sync::sync_channel(storage_blocks_config.request_channel_capacity);
+    let reader_update_tx = broadcast::Sender::new(256); // should be more than enough
 
     // Shutdown
     let mut threads = Vec::<(String, _)>::with_capacity(2);
@@ -78,7 +81,7 @@ fn try_main() -> anyhow::Result<()> {
     // Source
     let jh = thread::Builder::new().name("socSource".to_owned()).spawn({
         let runtime = config.source.tokio.clone().build_runtime("socSourceRt")?;
-        let stored_slots = Arc::clone(&stored_slots);
+        let reader_update_tx = reader_update_tx.clone();
         let shutdown = shutdown.clone();
         move || {
             runtime.block_on(async move {
@@ -92,12 +95,12 @@ fn try_main() -> anyhow::Result<()> {
                     }
                     None => {
                         let value =
-                            source::rpc::get_confirmed_slot(config.state_init.endpoint.clone())
+                            source::rpc::get_confirmed_slot(storage_init_config.endpoint.clone())
                                 .await
                                 .context("failed to get confirmed slot")?;
                         info!(slot = value.slot, "latest stored slot (rpc)");
 
-                        let config = config.state_init;
+                        let config = storage_init_config;
                         let shutdown = shutdown.clone();
                         let fetch_state_fut = async move {
                             let sst_files = source::rpc::fetch_confirmed_state(
@@ -120,10 +123,11 @@ fn try_main() -> anyhow::Result<()> {
                     }
                 };
 
-                let (update_tx, update_rx) = mpsc::channel(config.banks.updates_channel_size);
+                let (geyser_update_tx, geyser_update_rx) =
+                    mpsc_async::channel(storage_blocks_config.updates_channel_size);
                 let _: ((), (), ()) = tokio::try_join!(
                     source::grpc::subscribe(
-                        update_tx,
+                        geyser_update_tx,
                         config.source,
                         latest_stored_slot.slot + 1,
                         shutdown.clone()
@@ -131,8 +135,8 @@ fn try_main() -> anyhow::Result<()> {
                     blocks::start(
                         db_ready_fut,
                         latest_stored_slot,
-                        stored_slots,
-                        update_rx,
+                        geyser_update_rx,
+                        reader_update_tx,
                         shutdown.clone()
                     ),
                     metrics::spawn_server(
@@ -157,7 +161,7 @@ fn try_main() -> anyhow::Result<()> {
         move || {
             let runtime = config.rpc.tokio.clone().build_runtime("socRpcRt")?;
             runtime.block_on(async move {
-                let _: () = rpc::server::spawn(config.rpc, stored_slots, shutdown).await?;
+                let _: () = rpc::server::spawn(config.rpc, req_tx, shutdown).await?;
                 Ok::<(), anyhow::Error>(())
             })
         }

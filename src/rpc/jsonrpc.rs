@@ -1,5 +1,5 @@
 use {
-    crate::{config::ConfigRpc, storage::blocks::StoredSlots},
+    crate::{config::ConfigRpc, storage::read::ReadRequest},
     futures::future::BoxFuture,
     jsonrpsee_types::{
         Extensions, Id, Params, Request, Response, ResponsePayload, TwoPointZero,
@@ -18,7 +18,7 @@ use {
         config::RpcContextConfig, custom_error::RpcCustomError, response::RpcVersionInfo,
     },
     std::{
-        sync::{Arc, atomic::Ordering},
+        sync::{Arc, mpsc},
         time::Duration,
     },
 };
@@ -26,18 +26,18 @@ use {
 #[derive(Debug)]
 pub struct State {
     request_timeout: Duration,
-    stored_slots: Arc<StoredSlots>,
+    req_tx: mpsc::SyncSender<ReadRequest>,
 }
 
 pub fn create_request_processor(
     config: ConfigRpc,
-    stored_slots: Arc<StoredSlots>,
+    req_tx: mpsc::SyncSender<ReadRequest>,
 ) -> RpcRequestsProcessor<Arc<State>> {
     let mut processor = RpcRequestsProcessor::new(
         config.body_limit,
         Arc::new(State {
             request_timeout: config.request_timeout,
-            stored_slots,
+            req_tx,
         }),
         config.extra_headers,
     );
@@ -171,11 +171,12 @@ impl RpcRequestHandler for RpcRequestSlot {
         } = config.unwrap_or_default();
         let commitment = commitment.unwrap_or_default();
 
-        let context_slot = match commitment.commitment {
-            CommitmentLevel::Processed => state.stored_slots.processed.load(Ordering::Relaxed),
-            CommitmentLevel::Confirmed => state.stored_slots.confirmed.load(Ordering::Relaxed),
-            CommitmentLevel::Finalized => state.stored_slots.finalized.load(Ordering::Relaxed),
-        };
+        // let context_slot = match commitment.commitment {
+        //     CommitmentLevel::Processed => state.stored_slots.processed.load(Ordering::Relaxed),
+        //     CommitmentLevel::Confirmed => state.stored_slots.confirmed.load(Ordering::Relaxed),
+        //     CommitmentLevel::Finalized => state.stored_slots.finalized.load(Ordering::Relaxed),
+        // };
+        let context_slot = 0; // TODO
 
         if let Some(min_context_slot) = min_context_slot
             && context_slot < min_context_slot

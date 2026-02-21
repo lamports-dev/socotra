@@ -20,10 +20,8 @@ use {
 pub struct Config {
     #[serde(default)]
     pub monitoring: ConfigMonitoring,
-    pub state_init: ConfigStateInit,
-    pub storage: ConfigStorage,
-    pub banks: ConfigBanks,
     pub source: ConfigSource,
+    pub storage: ConfigStorage,
     pub rpc: ConfigRpc,
 }
 
@@ -41,69 +39,6 @@ impl Default for ConfigMonitoring {
             logs_json: false,
             otlp_endpoint: None,
             prometheus_endpoint: SocketAddr::from(([127, 0, 0, 1], 9001)),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigStateInit {
-    pub endpoint: String,
-    #[serde(default = "ConfigStateInit::default_segments")]
-    pub segments: u8,
-}
-
-impl ConfigStateInit {
-    const fn default_segments() -> u8 {
-        16
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigStorage {
-    pub path: PathBuf,
-    #[serde(default)]
-    pub compression: ConfigStorageRocksdbCompression,
-}
-
-#[derive(Debug, Default, Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "lowercase")]
-pub enum ConfigStorageRocksdbCompression {
-    #[default]
-    None,
-    Snappy,
-    Zlib,
-    Bz2,
-    Lz4,
-    Lz4hc,
-    Zstd,
-}
-
-impl From<ConfigStorageRocksdbCompression> for DBCompressionType {
-    fn from(value: ConfigStorageRocksdbCompression) -> Self {
-        match value {
-            ConfigStorageRocksdbCompression::None => Self::None,
-            ConfigStorageRocksdbCompression::Snappy => Self::Snappy,
-            ConfigStorageRocksdbCompression::Zlib => Self::Zlib,
-            ConfigStorageRocksdbCompression::Bz2 => Self::Bz2,
-            ConfigStorageRocksdbCompression::Lz4 => Self::Lz4,
-            ConfigStorageRocksdbCompression::Lz4hc => Self::Lz4hc,
-            ConfigStorageRocksdbCompression::Zstd => Self::Zstd,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct ConfigBanks {
-    pub updates_channel_size: usize,
-}
-
-impl Default for ConfigBanks {
-    fn default() -> Self {
-        Self {
-            updates_channel_size: 512,
         }
     }
 }
@@ -137,6 +72,79 @@ impl Default for ConfigSourceReconnect {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigStorage {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub compression: ConfigStorageRocksdbCompression,
+    pub init: ConfigStorageInit,
+    pub blocks: ConfigBlocks,
+}
+
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "lowercase")]
+pub enum ConfigStorageRocksdbCompression {
+    #[default]
+    None,
+    Snappy,
+    Zlib,
+    Bz2,
+    Lz4,
+    Lz4hc,
+    Zstd,
+}
+
+impl From<ConfigStorageRocksdbCompression> for DBCompressionType {
+    fn from(value: ConfigStorageRocksdbCompression) -> Self {
+        match value {
+            ConfigStorageRocksdbCompression::None => Self::None,
+            ConfigStorageRocksdbCompression::Snappy => Self::Snappy,
+            ConfigStorageRocksdbCompression::Zlib => Self::Zlib,
+            ConfigStorageRocksdbCompression::Bz2 => Self::Bz2,
+            ConfigStorageRocksdbCompression::Lz4 => Self::Lz4,
+            ConfigStorageRocksdbCompression::Lz4hc => Self::Lz4hc,
+            ConfigStorageRocksdbCompression::Zstd => Self::Zstd,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigStorageInit {
+    pub endpoint: String,
+    #[serde(default = "ConfigStorageInit::default_segments")]
+    pub segments: u8,
+}
+
+impl ConfigStorageInit {
+    const fn default_segments() -> u8 {
+        16
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ConfigBlocks {
+    pub updates_channel_size: usize,
+    /// Max number of read requests in the queue
+    #[serde(deserialize_with = "deserialize_num_str")]
+    pub request_channel_capacity: usize,
+    /// Number of read workers
+    #[serde(deserialize_with = "deserialize_num_str")]
+    pub read_workers: usize,
+}
+
+impl Default for ConfigBlocks {
+    fn default() -> Self {
+        Self {
+            updates_channel_size: 512,
+            request_channel_capacity: 128 * 1024,
+            read_workers: num_cpus::get(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ConfigRpc {
     /// Endpoint of RPC service
@@ -152,9 +160,6 @@ pub struct ConfigRpc {
     /// Request timeout
     #[serde(with = "humantime_serde")]
     pub request_timeout: Duration,
-    /// Max number of requests in the queue
-    #[serde(deserialize_with = "deserialize_num_str")]
-    pub request_channel_capacity: usize,
 }
 
 impl Default for ConfigRpc {
@@ -165,7 +170,6 @@ impl Default for ConfigRpc {
             body_limit: 10 * 1024,
             extra_headers: Default::default(),
             request_timeout: Duration::from_secs(60),
-            request_channel_capacity: 4096,
         }
     }
 }

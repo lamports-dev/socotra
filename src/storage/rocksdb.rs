@@ -1,5 +1,5 @@
 use {
-    crate::config::ConfigStorage,
+    crate::config::ConfigStorageRocksdbCompression,
     anyhow::Context,
     prost::encoding::encode_varint,
     rocksdb::{
@@ -91,23 +91,26 @@ pub struct Rocksdb {
 }
 
 impl Rocksdb {
-    pub fn open(config: ConfigStorage) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(&config.path)
-            .with_context(|| format!("failed to create db directory: {:?}", config.path))?;
+    pub fn open(
+        path: PathBuf,
+        compression: ConfigStorageRocksdbCompression,
+    ) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(&path)
+            .with_context(|| format!("failed to create db directory: {:?}", path))?;
 
-        let accounts_compression = config.compression.into();
+        let accounts_compression = compression.into();
 
         let db_options = Self::get_db_options();
         let cf_descriptors = Self::cf_descriptors(accounts_compression);
 
         let db = Arc::new(
-            DB::open_cf_descriptors(&db_options, &config.path, cf_descriptors)
-                .with_context(|| format!("failed to open rocksdb with path: {:?}", config.path))?,
+            DB::open_cf_descriptors(&db_options, &path, cf_descriptors)
+                .with_context(|| format!("failed to open rocksdb with path: {:?}", path))?,
         );
 
         Ok(Self {
             db,
-            path: config.path,
+            path,
             accounts_compression,
         })
     }

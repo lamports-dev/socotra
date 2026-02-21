@@ -1,6 +1,6 @@
 use {
     crate::{
-        config::ConfigStateInit,
+        config::ConfigStorageInit,
         storage::rocksdb::{Rocksdb, SlotIndexValue},
     },
     anyhow::Context as _,
@@ -61,7 +61,7 @@ pub async fn get_confirmed_slot(endpoint: String) -> anyhow::Result<SlotIndexVal
 pub async fn fetch_confirmed_state(
     db: &Rocksdb,
     slot: Slot,
-    config: &ConfigStateInit,
+    config: &ConfigStorageInit,
     shutdown: CancellationToken,
 ) -> anyhow::Result<Vec<PathBuf>> {
     anyhow::ensure!(
