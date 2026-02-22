@@ -218,7 +218,7 @@ impl Rocksdb {
             .transpose()
     }
 
-    #[instrument(name = "store_block", skip_all, fields(slot = state_slot_info.slot, accounts))]
+    #[instrument(skip_all, fields(slot = state_slot_info.slot, accounts))]
     pub fn store_new_state(
         &self,
         state_slot_info: SlotIndexValue,

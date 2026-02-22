@@ -1,7 +1,5 @@
 use {
-    crate::{
-        config::ConfigRpc, rpc::jsonrpc::create_request_processor, storage::read::ReadRequest,
-    },
+    crate::{config::ConfigRpc, rpc::jsonrpc::create_request_processor, storage::reader::Reader},
     bytes::Bytes,
     http_body_util::{BodyExt, Empty as BodyEmpty},
     hyper::{Request, Response, StatusCode, body::Incoming as BodyIncoming, service::service_fn},
@@ -9,7 +7,7 @@ use {
         rt::tokio::{TokioExecutor, TokioIo},
         server::conn::auto::Builder as ServerBuilder,
     },
-    std::sync::{Arc, mpsc},
+    std::sync::Arc,
     tokio::net::TcpListener,
     tokio_util::sync::CancellationToken,
     tracing::{debug, error, info},
@@ -17,13 +15,13 @@ use {
 
 pub async fn spawn(
     config: ConfigRpc,
-    req_tx: mpsc::SyncSender<ReadRequest>,
+    reader: Reader,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(config.endpoint).await?;
     info!("start server at: {}", config.endpoint);
 
-    let jsonrpc_processor = Arc::new(create_request_processor(config, req_tx));
+    let jsonrpc_processor = Arc::new(create_request_processor(config, reader));
 
     tokio::spawn(async move {
         let http = ServerBuilder::new(TokioExecutor::new());

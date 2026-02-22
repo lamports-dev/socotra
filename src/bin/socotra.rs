@@ -11,16 +11,15 @@ use {
     socotra::{
         config::Config,
         metrics, rpc, source,
-        storage::{blocks, rocksdb::Rocksdb},
+        storage::{blocks, reader::Reader, rocksdb::Rocksdb},
     },
     std::{
         future::ready,
         io::{self, IsTerminal},
-        sync::{Arc, mpsc as mpsc_sync},
         thread::{self, sleep},
         time::Duration,
     },
-    tokio::sync::{broadcast, mpsc as mpsc_async},
+    tokio::sync::mpsc,
     tokio_util::sync::CancellationToken,
     tracing::{info, level_filters::LevelFilter, warn},
     tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt},
@@ -67,21 +66,33 @@ fn try_main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Open storage
-    let storage_init_config = config.storage.init;
-    let storage_blocks_config = config.storage.blocks;
-    let db = Rocksdb::open(config.storage.path, config.storage.compression)?;
-    let (req_tx, req_rx) = mpsc_sync::sync_channel(storage_blocks_config.request_channel_capacity);
-    let reader_update_tx = broadcast::Sender::new(256); // should be more than enough
-
     // Shutdown
     let mut threads = Vec::<(String, _)>::with_capacity(2);
     let shutdown = CancellationToken::new();
 
+    // Open storage
+    let storage_init_config = config.storage.init;
+    let storage_blocks_config = config.storage.blocks;
+    let db = Rocksdb::open(config.storage.path, config.storage.compression)?;
+    let (reader, reader_threads) = Reader::new(
+        db.clone(),
+        storage_blocks_config.request_channel_capacity,
+        storage_blocks_config.read_workers,
+        config.rpc.request_timeout,
+    )?;
+    for th in reader_threads {
+        let name = th
+            .thread()
+            .name()
+            .map(|name| name.to_owned())
+            .unwrap_or_default();
+        threads.push((name, Some(th)));
+    }
+
     // Source
     let jh = thread::Builder::new().name("socSource".to_owned()).spawn({
         let runtime = config.source.tokio.clone().build_runtime("socSourceRt")?;
-        let reader_update_tx = reader_update_tx.clone();
+        let reader = reader.clone();
         let shutdown = shutdown.clone();
         move || {
             runtime.block_on(async move {
@@ -124,7 +135,7 @@ fn try_main() -> anyhow::Result<()> {
                 };
 
                 let (geyser_update_tx, geyser_update_rx) =
-                    mpsc_async::channel(storage_blocks_config.updates_channel_size);
+                    mpsc::channel(storage_blocks_config.updates_channel_size);
                 let _: ((), (), ()) = tokio::try_join!(
                     source::grpc::subscribe(
                         geyser_update_tx,
@@ -136,7 +147,7 @@ fn try_main() -> anyhow::Result<()> {
                         db_ready_fut,
                         latest_stored_slot,
                         geyser_update_rx,
-                        reader_update_tx,
+                        reader,
                         shutdown.clone()
                     ),
                     metrics::spawn_server(
@@ -161,7 +172,7 @@ fn try_main() -> anyhow::Result<()> {
         move || {
             let runtime = config.rpc.tokio.clone().build_runtime("socRpcRt")?;
             runtime.block_on(async move {
-                let _: () = rpc::server::spawn(config.rpc, req_tx, shutdown).await?;
+                let _: () = rpc::server::spawn(config.rpc, reader, shutdown).await?;
                 Ok::<(), anyhow::Error>(())
             })
         }

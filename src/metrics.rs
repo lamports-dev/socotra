@@ -13,6 +13,7 @@ use {
 };
 
 pub const WRITE_BLOCK_SYNC_SECONDS: &str = "write_block_sync_seconds";
+pub const BUILD_READER_STATE_SECONDS: &str = "build_reader_state_seconds";
 
 pub fn setup() -> anyhow::Result<PrometheusHandle> {
     let default_buckets = &[
@@ -27,6 +28,10 @@ pub fn setup() -> anyhow::Result<PrometheusHandle> {
         .set_buckets_for_metric(
             Matcher::Full(WRITE_BLOCK_SYNC_SECONDS.to_owned()),
             &[0.005, 0.01, 0.02, 0.03, 0.04, 0.05, 0.075, 0.1, 0.2, 0.4],
+        )?
+        .set_buckets_for_metric(
+            Matcher::Full(BUILD_READER_STATE_SECONDS.to_owned()),
+            &[0.005, 0.01, 0.02, 0.03, 0.04, 0.05, 0.075, 0.1],
         )?
         .install_recorder()
         .context("failed to install prometheus exporter")?;
@@ -47,6 +52,7 @@ pub fn setup() -> anyhow::Result<PrometheusHandle> {
     .absolute(1);
 
     describe_histogram!(WRITE_BLOCK_SYNC_SECONDS, "Write block sync time");
+    describe_histogram!(BUILD_READER_STATE_SECONDS, "Build reader state time");
 
     Ok(handle)
 }

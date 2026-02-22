@@ -1,5 +1,5 @@
 use {
-    crate::{config::ConfigRpc, storage::read::ReadRequest},
+    crate::{config::ConfigRpc, storage::reader::Reader},
     futures::future::BoxFuture,
     jsonrpsee_types::{
         Extensions, Id, Params, Request, Response, ResponsePayload, TwoPointZero,
@@ -25,20 +25,16 @@ use {
 
 #[derive(Debug)]
 pub struct State {
-    request_timeout: Duration,
-    req_tx: mpsc::SyncSender<ReadRequest>,
+    reader: Reader,
 }
 
 pub fn create_request_processor(
     config: ConfigRpc,
-    req_tx: mpsc::SyncSender<ReadRequest>,
+    reader: Reader,
 ) -> RpcRequestsProcessor<Arc<State>> {
     let mut processor = RpcRequestsProcessor::new(
         config.body_limit,
-        Arc::new(State {
-            request_timeout: config.request_timeout,
-            req_tx,
-        }),
+        Arc::new(State { reader }),
         config.extra_headers,
     );
 

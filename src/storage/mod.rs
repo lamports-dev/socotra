@@ -1,3 +1,3 @@
 pub mod blocks;
-pub mod read;
+pub mod reader;
 pub mod rocksdb;
