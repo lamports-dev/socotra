@@ -18,27 +18,35 @@ enum ReadRequest {
         x_subscription_id: Arc<str>,
         pubkey: Pubkey,
         commitment: CommitmentLevel,
+        min_context_slot: Option<Slot>,
         tx: oneshot::Sender<ReadResultAccount>,
     },
     Slot {
         deadline: Instant,
         x_subscription_id: Arc<str>,
         commitment: CommitmentLevel,
+        min_context_slot: Option<Slot>,
         tx: oneshot::Sender<ReadResultSlot>,
     },
 }
 
 #[derive(Debug)]
 pub enum ReadResultAccount {
-    ChanClosed,
+    ReqChanClosed,
+    ReqChanFull,
+    ReqDrop,
     Timeout,
+    MinContextSlotNotReached { context_slot: Slot },
     // TODO
 }
 
 #[derive(Debug)]
 pub enum ReadResultSlot {
-    ChanClosed,
+    ReqChanClosed,
+    ReqChanFull,
+    ReqDrop,
     Timeout,
+    MinContextSlotNotReached { context_slot: Slot },
     Slot(Slot),
 }
 
@@ -93,8 +101,9 @@ impl Reader {
         update_rx: broadcast::Receiver<Arc<ReaderState>>,
         req_rx: Arc<Mutex<mpsc::Receiver<ReadRequest>>>,
     ) -> anyhow::Result<()> {
-        std::thread::sleep(std::time::Duration::from_secs(100000));
-        Ok(())
+        loop {
+            //
+        }
     }
 
     pub fn update(&self, update: Arc<ReaderState>) -> anyhow::Result<()> {
@@ -107,15 +116,50 @@ impl Reader {
         x_subscription_id: Arc<str>,
         pubkey: Pubkey,
         commitment: CommitmentLevel,
+        min_context_slot: Option<Slot>,
     ) -> ReadResultAccount {
-        todo!()
+        let (tx, rx) = oneshot::channel();
+        match self.req_tx.try_send(ReadRequest::Account {
+            deadline: Instant::now() + self.read_timeout,
+            x_subscription_id,
+            pubkey,
+            commitment,
+            min_context_slot,
+            tx,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Disconnected(_)) => return ReadResultAccount::ReqChanClosed,
+            Err(mpsc::TrySendError::Full(_)) => return ReadResultAccount::ReqChanFull,
+        };
+
+        match rx.await {
+            Ok(value) => value,
+            Err(_) => ReadResultAccount::ReqDrop,
+        }
     }
 
     pub async fn get_slot(
         &self,
         x_subscription_id: Arc<str>,
         commitment: CommitmentLevel,
+        min_context_slot: Option<Slot>,
     ) -> ReadResultSlot {
-        todo!()
+        let (tx, rx) = oneshot::channel();
+        match self.req_tx.try_send(ReadRequest::Slot {
+            deadline: Instant::now() + self.read_timeout,
+            x_subscription_id,
+            commitment,
+            min_context_slot,
+            tx,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Disconnected(_)) => return ReadResultSlot::ReqChanClosed,
+            Err(mpsc::TrySendError::Full(_)) => return ReadResultSlot::ReqChanFull,
+        };
+
+        match rx.await {
+            Ok(value) => value,
+            Err(_) => ReadResultSlot::ReqDrop,
+        }
     }
 }

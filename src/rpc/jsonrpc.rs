@@ -1,5 +1,8 @@
 use {
-    crate::{config::ConfigRpc, storage::reader::Reader},
+    crate::{
+        config::ConfigRpc,
+        storage::reader::{ReadResultSlot, Reader},
+    },
     futures::future::BoxFuture,
     jsonrpsee_types::{
         Extensions, Id, Params, Request, Response, ResponsePayload, TwoPointZero,
@@ -17,10 +20,8 @@ use {
     solana_rpc_client::api::{
         config::RpcContextConfig, custom_error::RpcCustomError, response::RpcVersionInfo,
     },
-    std::{
-        sync::{Arc, mpsc},
-        time::Duration,
-    },
+    solana_sdk::clock::Slot,
+    std::sync::Arc,
 };
 
 #[derive(Debug)]
@@ -141,12 +142,18 @@ impl RpcRequestHandler for RpcRequestVersion {
 }
 
 #[derive(Debug)]
-struct RpcRequestSlot;
+struct RpcRequestSlot {
+    state: Arc<State>,
+    x_subscription_id: Arc<str>,
+    id: Id<'static>,
+    commitment: CommitmentLevel,
+    min_context_slot: Option<Slot>,
+}
 
 impl RpcRequestHandler for RpcRequestSlot {
     fn parse(
         state: Arc<State>,
-        _x_subscription_id: Arc<str>,
+        x_subscription_id: Arc<str>,
         _upstream_disabled: bool,
         request: Request<'_>,
     ) -> Result<Self, Vec<u8>> {
@@ -167,23 +174,38 @@ impl RpcRequestHandler for RpcRequestSlot {
         } = config.unwrap_or_default();
         let commitment = commitment.unwrap_or_default();
 
-        // let context_slot = match commitment.commitment {
-        //     CommitmentLevel::Processed => state.stored_slots.processed.load(Ordering::Relaxed),
-        //     CommitmentLevel::Confirmed => state.stored_slots.confirmed.load(Ordering::Relaxed),
-        //     CommitmentLevel::Finalized => state.stored_slots.finalized.load(Ordering::Relaxed),
-        // };
-        let context_slot = 0; // TODO
+        Ok(Self {
+            state,
+            x_subscription_id,
+            id: id.into_owned(),
+            commitment: commitment.commitment,
+            min_context_slot,
+        })
+    }
 
-        if let Some(min_context_slot) = min_context_slot
-            && context_slot < min_context_slot
+    async fn process(self) -> RpcRequestResult {
+        match self
+            .state
+            .reader
+            .get_slot(
+                self.x_subscription_id,
+                self.commitment,
+                self.min_context_slot,
+            )
+            .await
         {
-            return Err(jsonrpc_response_error_custom(
-                id,
-                RpcCustomError::MinContextSlotNotReached { context_slot },
-            ));
+            ReadResultSlot::ReqChanClosed => anyhow::bail!("reader workers terminated"),
+            ReadResultSlot::ReqChanFull => anyhow::bail!("request queue is full"),
+            ReadResultSlot::ReqDrop => anyhow::bail!("request dropped by reader"),
+            ReadResultSlot::Timeout => anyhow::bail!("request timeout"),
+            ReadResultSlot::MinContextSlotNotReached { context_slot } => {
+                Ok(jsonrpc_response_error_custom(
+                    self.id,
+                    RpcCustomError::MinContextSlotNotReached { context_slot },
+                ))
+            }
+            ReadResultSlot::Slot(slot) => Ok(jsonrpc_response_success(self.id, slot)),
         }
-
-        Err(jsonrpc_response_success(id, context_slot))
     }
 }
 

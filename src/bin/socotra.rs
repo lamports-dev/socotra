@@ -67,7 +67,8 @@ fn try_main() -> anyhow::Result<()> {
     }
 
     // Shutdown
-    let mut threads = Vec::<(String, _)>::with_capacity(2);
+    let mut threads =
+        Vec::<(String, Option<thread::JoinHandle<anyhow::Result<()>>>)>::with_capacity(2);
     let shutdown = CancellationToken::new();
 
     // Open storage
