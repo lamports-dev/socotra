@@ -15,6 +15,8 @@ use {
 pub const WRITE_BLOCK_SYNC_SECONDS: &str = "write_block_sync_seconds";
 pub const BUILD_READER_STATE_SECONDS: &str = "build_reader_state_seconds";
 
+pub const READ_REQUESTS_TOTAL: &str = "read_requests_total"; // x_subscription_id, type
+
 pub fn setup() -> anyhow::Result<PrometheusHandle> {
     let default_buckets = &[
         0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
@@ -53,6 +55,7 @@ pub fn setup() -> anyhow::Result<PrometheusHandle> {
 
     describe_histogram!(WRITE_BLOCK_SYNC_SECONDS, "Write block sync time");
     describe_histogram!(BUILD_READER_STATE_SECONDS, "Build reader state time");
+    describe_counter!(READ_REQUESTS_TOTAL, "Total account/slot lookups processed");
 
     Ok(handle)
 }

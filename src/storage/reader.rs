@@ -1,6 +1,8 @@
 use {
-    crate::storage::rocksdb::Rocksdb,
+    crate::{metrics::READ_REQUESTS_TOTAL, storage::rocksdb::Rocksdb},
     ahash::HashMap,
+    arrayvec::ArrayVec,
+    metrics::counter,
     richat_shared::mutex_lock,
     solana_commitment_config::CommitmentLevel,
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
@@ -9,7 +11,6 @@ use {
         thread,
         time::{Duration, Instant},
     },
-    arrayvec::ArrayVec,
     tokio::sync::{broadcast, oneshot},
     tokio_util::sync::CancellationToken,
 };
@@ -157,6 +158,13 @@ impl Reader {
                         let _ = tx.send(if deadline < started_at {
                             ReadResultAccount::Timeout
                         } else {
+                            counter!(
+                                READ_REQUESTS_TOTAL,
+                                "x_subscription_id" => x_subscription_id,
+                                "type" => "account"
+                            )
+                            .increment(pubkeys.len() as u64);
+
                             let slot = match commitment {
                                 CommitmentLevel::Processed => state.processed_slot,
                                 CommitmentLevel::Confirmed => state.confirmed_slot,
@@ -185,6 +193,13 @@ impl Reader {
                         let _ = tx.send(if deadline < started_at {
                             ReadResultSlot::Timeout
                         } else {
+                            counter!(
+                                READ_REQUESTS_TOTAL,
+                                "x_subscription_id" => x_subscription_id,
+                                "type" => "slot"
+                            )
+                            .increment(1);
+
                             let slot = match commitment {
                                 CommitmentLevel::Processed => state.processed_slot,
                                 CommitmentLevel::Confirmed => state.confirmed_slot,
