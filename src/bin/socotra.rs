@@ -80,6 +80,7 @@ fn try_main() -> anyhow::Result<()> {
         storage_blocks_config.request_channel_capacity,
         storage_blocks_config.read_workers,
         config.rpc.request_timeout,
+        shutdown.clone(),
     )?;
     for th in reader_threads {
         let name = th

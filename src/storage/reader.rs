@@ -1,6 +1,7 @@
 use {
     crate::storage::rocksdb::Rocksdb,
     ahash::HashMap,
+    richat_shared::mutex_lock,
     solana_commitment_config::CommitmentLevel,
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
     std::{
@@ -9,6 +10,7 @@ use {
         time::{Duration, Instant},
     },
     tokio::sync::{broadcast, oneshot},
+    tokio_util::sync::CancellationToken,
 };
 
 #[derive(Debug)]
@@ -72,6 +74,7 @@ impl Reader {
         req_channel_capacity: usize,
         read_workers: usize,
         read_timeout: Duration,
+        shutdown: CancellationToken,
     ) -> anyhow::Result<(Self, Vec<thread::JoinHandle<anyhow::Result<()>>>)> {
         let (req_tx, req_rx) = mpsc::sync_channel(req_channel_capacity);
         let req_rx = Arc::new(Mutex::new(req_rx));
@@ -82,9 +85,10 @@ impl Reader {
                 let db = db.clone();
                 let update_rx = update_tx.subscribe();
                 let req_rx = Arc::clone(&req_rx);
+                let shutdown = shutdown.clone();
                 thread::Builder::new()
                     .name(format!("socReader{id:02}"))
-                    .spawn(move || Self::spawn_worker(db, update_rx, req_rx))
+                    .spawn(move || Self::spawn_worker(db, update_rx, req_rx, shutdown))
             })
             .collect::<Result<_, _>>()?;
 
@@ -98,11 +102,114 @@ impl Reader {
 
     fn spawn_worker(
         db: Rocksdb,
-        update_rx: broadcast::Receiver<Arc<ReaderState>>,
+        mut update_rx: broadcast::Receiver<Arc<ReaderState>>,
         req_rx: Arc<Mutex<mpsc::Receiver<ReadRequest>>>,
+        shutdown: CancellationToken,
     ) -> anyhow::Result<()> {
+        let mut state = None;
         loop {
-            //
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
+
+            let mut is_empty_update = true;
+            let mut is_empty_req = true;
+
+            loop {
+                match update_rx.try_recv() {
+                    Ok(new_state) => {
+                        state = Some(new_state);
+                        is_empty_update = false;
+                    }
+                    Err(broadcast::error::TryRecvError::Empty) => break,
+                    Err(broadcast::error::TryRecvError::Closed) => return Ok(()),
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                        anyhow::bail!("lagged reader")
+                    }
+                }
+            }
+
+            let loop_deadline = Instant::now() + Duration::from_millis(5);
+            loop {
+                let request = {
+                    match mutex_lock(&req_rx).try_recv() {
+                        Ok(request) => request,
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+                    }
+                };
+                is_empty_req = false;
+
+                let started_at = Instant::now();
+                match (&state, request) {
+                    (
+                        Some(state),
+                        ReadRequest::Account {
+                            deadline,
+                            x_subscription_id,
+                            pubkey,
+                            commitment,
+                            min_context_slot,
+                            tx,
+                        },
+                    ) => {
+                        let _ = tx.send(if deadline < started_at {
+                            ReadResultAccount::Timeout
+                        } else {
+                            let slot = match commitment {
+                                CommitmentLevel::Processed => state.processed_slot,
+                                CommitmentLevel::Confirmed => state.confirmed_slot,
+                                CommitmentLevel::Finalized => state.finalized_slot,
+                            };
+
+                            if let Some(min_context_slot) = min_context_slot
+                                && slot < min_context_slot
+                            {
+                                ReadResultAccount::MinContextSlotNotReached { context_slot: slot }
+                            } else {
+                                todo!()
+                            }
+                        });
+                    }
+                    (
+                        Some(state),
+                        ReadRequest::Slot {
+                            deadline,
+                            x_subscription_id,
+                            commitment,
+                            min_context_slot,
+                            tx,
+                        },
+                    ) => {
+                        let _ = tx.send(if deadline < started_at {
+                            ReadResultSlot::Timeout
+                        } else {
+                            let slot = match commitment {
+                                CommitmentLevel::Processed => state.processed_slot,
+                                CommitmentLevel::Confirmed => state.confirmed_slot,
+                                CommitmentLevel::Finalized => state.finalized_slot,
+                            };
+
+                            if let Some(min_context_slot) = min_context_slot
+                                && slot < min_context_slot
+                            {
+                                ReadResultSlot::MinContextSlotNotReached { context_slot: slot }
+                            } else {
+                                ReadResultSlot::Slot(slot)
+                            }
+                        });
+                    }
+                    (None, _) => {}
+                }
+
+                if Instant::now() >= loop_deadline {
+                    break;
+                }
+            }
+
+            if is_empty_update && is_empty_req {
+                thread::sleep(Duration::from_millis(1));
+            }
         }
     }
 
