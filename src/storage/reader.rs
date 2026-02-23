@@ -9,6 +9,7 @@ use {
         thread,
         time::{Duration, Instant},
     },
+    arrayvec::ArrayVec,
     tokio::sync::{broadcast, oneshot},
     tokio_util::sync::CancellationToken,
 };
@@ -18,7 +19,7 @@ enum ReadRequest {
     Account {
         deadline: Instant,
         x_subscription_id: Arc<str>,
-        pubkey: Pubkey,
+        pubkeys: ArrayVec<Pubkey, 100>,
         commitment: CommitmentLevel,
         min_context_slot: Option<Slot>,
         tx: oneshot::Sender<ReadResultAccount>,
@@ -147,7 +148,7 @@ impl Reader {
                         ReadRequest::Account {
                             deadline,
                             x_subscription_id,
-                            pubkey,
+                            pubkeys,
                             commitment,
                             min_context_slot,
                             tx,
@@ -221,7 +222,7 @@ impl Reader {
     pub async fn get_account(
         &self,
         x_subscription_id: Arc<str>,
-        pubkey: Pubkey,
+        pubkeys: ArrayVec<Pubkey, 100>,
         commitment: CommitmentLevel,
         min_context_slot: Option<Slot>,
     ) -> ReadResultAccount {
@@ -229,7 +230,7 @@ impl Reader {
         match self.req_tx.try_send(ReadRequest::Account {
             deadline: Instant::now() + self.read_timeout,
             x_subscription_id,
-            pubkey,
+            pubkeys,
             commitment,
             min_context_slot,
             tx,
