@@ -54,7 +54,7 @@ fn try_main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to load config from {}", args.config))?;
 
     // Setup monitoring
-    let otel_runtime = setup_tracing(
+    let otel_state = setup_tracing(
         config.monitoring.logs_json,
         config.monitoring.otlp_endpoint.as_deref(),
     )?;
@@ -214,9 +214,8 @@ fn try_main() -> anyhow::Result<()> {
     }
 
     // Flush remaining OTLP spans while the runtime is still alive
-    if let Some(otel) = otel_runtime {
-        let _guard = otel.runtime.enter();
-        let _ = otel.tracer_provider.shutdown();
+    if let Some(otel) = otel_state {
+        otel.shutdown();
     }
 
     Ok(())
@@ -225,6 +224,25 @@ fn try_main() -> anyhow::Result<()> {
 struct OtelState {
     runtime: tokio::runtime::Runtime,
     tracer_provider: opentelemetry_sdk::trace::SdkTracerProvider,
+}
+
+impl OtelState {
+    fn shutdown(self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::Builder::new()
+            .name("socOtelShutdown".to_owned())
+            .spawn(move || {
+                let _guard = self.runtime.enter();
+                let result = self.tracer_provider.shutdown();
+                let _ = tx.send(result);
+            })
+            .expect("failed to spawn OTLP shutdown thread");
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => info!("OTLP tracer provider shut down successfully"),
+            Ok(Err(error)) => warn!("OTLP shutdown error: {error}"),
+            Err(_) => warn!("OTLP shutdown timed out after 5s"),
+        }
+    }
 }
 
 fn setup_tracing(
