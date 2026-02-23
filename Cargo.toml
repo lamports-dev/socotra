@@ -13,7 +13,6 @@ publish = false
 [dependencies]
 ahash = "0.8.12"
 anyhow = "1.0.100"
-arrayvec = "0.7.6"
 bytes = "1.11.0"
 clap = { version = "4.5.30", features = ["derive"] }
 futures = "0.3.31"

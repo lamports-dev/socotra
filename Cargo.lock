@@ -3682,7 +3682,6 @@ version = "0.1.0"
 dependencies = [
  "ahash",
  "anyhow",
- "arrayvec",
  "bytes",
  "cargo-lock",
  "clap",

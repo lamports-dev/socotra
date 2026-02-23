@@ -1,7 +1,6 @@
 use {
     crate::{metrics::READ_REQUESTS_TOTAL, storage::rocksdb::Rocksdb},
     ahash::HashMap,
-    arrayvec::ArrayVec,
     metrics::counter,
     richat_shared::mutex_lock,
     solana_commitment_config::CommitmentLevel,
@@ -20,7 +19,7 @@ enum ReadRequest {
     Account {
         deadline: Instant,
         x_subscription_id: Arc<str>,
-        pubkeys: ArrayVec<Pubkey, 100>,
+        pubkeys: Vec<Pubkey>,
         commitment: CommitmentLevel,
         min_context_slot: Option<Slot>,
         tx: oneshot::Sender<ReadResultAccount>,
@@ -237,7 +236,7 @@ impl Reader {
     pub async fn get_account(
         &self,
         x_subscription_id: Arc<str>,
-        pubkeys: ArrayVec<Pubkey, 100>,
+        pubkeys: Vec<Pubkey>,
         commitment: CommitmentLevel,
         min_context_slot: Option<Slot>,
     ) -> ReadResultAccount {
