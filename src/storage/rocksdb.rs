@@ -1,7 +1,8 @@
 use {
     crate::config::ConfigStorageRocksdbCompression,
     anyhow::Context,
-    prost::encoding::encode_varint,
+    bytes::Buf,
+    prost::encoding::{decode_varint, encode_varint},
     rocksdb::{
         ColumnFamily, ColumnFamilyDescriptor, DB, DBCompressionType, IngestExternalFileOptions,
         Options, WriteBatch,
@@ -81,6 +82,53 @@ impl AccountIndexValue {
         buf.push(if account.executable { 1 } else { 0 });
         encode_varint(account.rent_epoch, buf);
     }
+
+    fn decode(mut data: &[u8]) -> Result<Account, prost::DecodeError> {
+        let lamports = decode_varint(&mut data)?;
+        let data_len = decode_varint(&mut data)? as usize;
+        if data.remaining() < data_len {
+            return Err(
+                #[allow(deprecated)]
+                {
+                    prost::DecodeError::new("not enough data for account data")
+                },
+            );
+        }
+        let account_data = data[..data_len].to_vec();
+        data.advance(data_len);
+        if data.remaining() < 33 {
+            return Err(
+                #[allow(deprecated)]
+                {
+                    prost::DecodeError::new("not enough data for owner and executable")
+                },
+            );
+        }
+        let owner = Pubkey::from(<[u8; 32]>::try_from(&data[..32]).unwrap());
+        data.advance(32);
+        let executable = data[0] != 0;
+        data.advance(1);
+        let rent_epoch = decode_varint(&mut data)?;
+        Ok(Account {
+            lamports,
+            data: account_data,
+            owner,
+            executable,
+            rent_epoch,
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GetAccountsError {
+    #[error("rocksdb: {0}")]
+    Rocksdb(#[from] rocksdb::Error),
+    #[error("slot not found")]
+    SlotNotFound,
+    #[error("decode slot: {0}")]
+    DecodeSlot(anyhow::Error),
+    #[error("decode account: {0}")]
+    DecodeAccount(#[from] prost::DecodeError),
 }
 
 #[derive(Debug, Clone)]
@@ -254,5 +302,42 @@ impl Rocksdb {
                 .write(batch)
                 .context("failed to write accounts in batch")
         }
+    }
+
+    pub fn get_accounts(
+        &self,
+        pubkeys: &[Pubkey],
+        accounts: &mut [Option<Arc<Account>>],
+    ) -> Result<Slot, GetAccountsError> {
+        let snapshot = self.db.snapshot();
+
+        let slot = snapshot
+            .get_cf(self.cf_handle::<SlotIndexKey>(), "slot")?
+            .map(|data| SlotIndexValue::decode(&data))
+            .transpose()
+            .map_err(GetAccountsError::DecodeSlot)?
+            .ok_or(GetAccountsError::SlotNotFound)?
+            .slot;
+
+        let cf = self.cf_handle::<AccountIndexKey>();
+        let indices: Vec<usize> = accounts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| a.is_none().then_some(i))
+            .collect();
+
+        let results = snapshot.multi_get_cf(
+            indices
+                .iter()
+                .map(|&i| (cf, AccountIndexKey::encode(&pubkeys[i]))),
+        );
+
+        for (idx, result) in indices.into_iter().zip(results) {
+            if let Some(data) = result? {
+                accounts[idx] = Some(Arc::new(AccountIndexValue::decode(&data)?));
+            }
+        }
+
+        Ok(slot)
     }
 }

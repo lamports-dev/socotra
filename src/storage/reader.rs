@@ -39,8 +39,14 @@ pub enum ReadResultAccount {
     ReqChanFull,
     ReqDrop,
     Timeout,
-    MinContextSlotNotReached { context_slot: Slot },
-    // TODO
+    MinContextSlotNotReached {
+        context_slot: Slot,
+    },
+    RequestFailed(String),
+    Accounts {
+        slot: Slot,
+        accounts: Vec<Arc<Account>>,
+    },
 }
 
 #[derive(Debug)]
@@ -164,7 +170,7 @@ impl Reader {
                             )
                             .increment(pubkeys.len() as u64);
 
-                            let slot = match commitment {
+                            let mut slot = match commitment {
                                 CommitmentLevel::Processed => state.processed_slot,
                                 CommitmentLevel::Confirmed => state.confirmed_slot,
                                 CommitmentLevel::Finalized => state.finalized_slot,
@@ -175,7 +181,57 @@ impl Reader {
                             {
                                 ReadResultAccount::MinContextSlotNotReached { context_slot: slot }
                             } else {
-                                todo!()
+                                let mut accounts: Vec<Option<Arc<Account>>> =
+                                    vec![None; pubkeys.len()];
+
+                                if commitment == CommitmentLevel::Processed {
+                                    for (i, pubkey) in pubkeys.iter().enumerate() {
+                                        if let Some(account) = state.processed_map.get(pubkey) {
+                                            accounts[i] = Some(Arc::clone(account));
+                                        }
+                                    }
+                                }
+
+                                if matches!(
+                                    commitment,
+                                    CommitmentLevel::Processed | CommitmentLevel::Confirmed
+                                ) {
+                                    for (i, pubkey) in pubkeys.iter().enumerate() {
+                                        if accounts[i].is_none()
+                                            && let Some(account) = state.confirmed_map.get(pubkey)
+                                        {
+                                            accounts[i] = Some(Arc::clone(account));
+                                        }
+                                    }
+                                }
+
+                                let mut db_error = None;
+                                if accounts.iter().any(Option::is_none) {
+                                    match db.get_accounts(&pubkeys, &mut accounts) {
+                                        Ok(db_slot) => {
+                                            if commitment == CommitmentLevel::Finalized {
+                                                slot = db_slot;
+                                            }
+                                        }
+                                        Err(error) => {
+                                            db_error = Some(error.to_string());
+                                        }
+                                    }
+                                }
+
+                                if let Some(error) = db_error {
+                                    ReadResultAccount::RequestFailed(error)
+                                } else {
+                                    ReadResultAccount::Accounts {
+                                        slot,
+                                        accounts: accounts
+                                            .into_iter()
+                                            .map(|a| {
+                                                a.unwrap_or_else(|| Arc::new(Account::default()))
+                                            })
+                                            .collect(),
+                                    }
+                                }
                             }
                         });
                     }
