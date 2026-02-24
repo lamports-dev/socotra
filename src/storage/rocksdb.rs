@@ -1,5 +1,6 @@
 use {
     crate::config::ConfigStorageRocksdbCompression,
+    ahash::HashMap,
     anyhow::Context,
     bytes::Buf,
     prost::encoding::{decode_varint, encode_varint},
@@ -7,6 +8,8 @@ use {
         ColumnFamily, ColumnFamilyDescriptor, DB, DBCompressionType, IngestExternalFileOptions,
         Options, WriteBatch,
     },
+    solana_account_decoder::parse_account_data::AccountAdditionalDataV3,
+    solana_commitment_config::CommitmentLevel,
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
     std::{
         path::{Path, PathBuf},
@@ -308,6 +311,9 @@ impl Rocksdb {
         &self,
         pubkeys: &[Pubkey],
         accounts: &mut [Option<Arc<Account>>],
+        json_parsed: bool,
+        mints: &mut HashMap<Pubkey, AccountAdditionalDataV3>,
+        get_account: impl Fn(&Pubkey) -> Option<Arc<Account>>,
     ) -> Result<Slot, GetAccountsError> {
         let snapshot = self.db.snapshot();
 
@@ -320,10 +326,14 @@ impl Rocksdb {
             .slot;
 
         let cf = self.cf_handle::<AccountIndexKey>();
-        let indices: Vec<usize> = accounts
+
+        let indices: Vec<usize> = pubkeys
             .iter()
             .enumerate()
-            .filter_map(|(i, a)| a.is_none().then_some(i))
+            .filter_map(|(i, pubkey)| {
+                accounts[i] = get_account(pubkey);
+                accounts[i].is_none().then_some(i)
+            })
             .collect();
 
         let results = snapshot.multi_get_cf(

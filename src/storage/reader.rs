@@ -201,7 +201,7 @@ impl Reader {
                             )
                             .increment(pubkeys.len() as u64);
 
-                            let mut slot = match commitment {
+                            let slot = match commitment {
                                 CommitmentLevel::Processed => state.processed_slot,
                                 CommitmentLevel::Confirmed => state.confirmed_slot,
                                 CommitmentLevel::Finalized => state.finalized_slot,
@@ -214,50 +214,42 @@ impl Reader {
                             } else {
                                 let mut accounts: Vec<Option<Arc<Account>>> =
                                     vec![None; pubkeys.len()];
+                                let mut mints = HashMap::default();
 
-                                if commitment == CommitmentLevel::Processed {
-                                    for (i, pubkey) in pubkeys.iter().enumerate() {
-                                        if let Some(account) = state.processed_map.get(pubkey) {
-                                            accounts[i] = Some(Arc::clone(account));
-                                        }
-                                    }
-                                }
-
-                                if matches!(
-                                    commitment,
-                                    CommitmentLevel::Processed | CommitmentLevel::Confirmed
-                                ) {
-                                    for (i, pubkey) in pubkeys.iter().enumerate() {
-                                        if accounts[i].is_none()
-                                            && let Some(account) = state.confirmed_map.get(pubkey)
-                                        {
-                                            accounts[i] = Some(Arc::clone(account));
-                                        }
-                                    }
-                                }
-
-                                let mut db_error = None;
-                                if accounts.iter().any(Option::is_none) {
-                                    match db.get_accounts(&pubkeys, &mut accounts) {
-                                        Ok(db_slot) => {
-                                            if commitment == CommitmentLevel::Finalized {
-                                                slot = db_slot;
+                                match db.get_accounts(
+                                    &pubkeys,
+                                    &mut accounts,
+                                    json_parsed,
+                                    &mut mints,
+                                    |pubkey| {
+                                        if commitment == CommitmentLevel::Processed {
+                                            if let Some(account) = state.processed_map.get(pubkey) {
+                                                return Some(Arc::clone(&account));
                                             }
                                         }
-                                        Err(error) => {
-                                            db_error = Some(error.to_string());
+                                        if matches!(
+                                            commitment,
+                                            CommitmentLevel::Processed | CommitmentLevel::Confirmed
+                                        ) {
+                                            if let Some(account) = state.confirmed_map.get(pubkey) {
+                                                return Some(Arc::clone(account));
+                                            }
                                         }
-                                    }
-                                }
-
-                                if let Some(error) = db_error {
-                                    ReadResultAccount::RequestFailed(error)
-                                } else {
-                                    ReadResultAccount::Accounts {
-                                        slot,
+                                        None
+                                    },
+                                ) {
+                                    Ok(db_slot) => ReadResultAccount::Accounts {
+                                        slot: if commitment == CommitmentLevel::Finalized {
+                                            db_slot
+                                        } else {
+                                            slot
+                                        },
                                         pubkeys,
                                         accounts,
-                                        mints: Default::default(), // TODO
+                                        mints,
+                                    },
+                                    Err(error) => {
+                                        ReadResultAccount::RequestFailed(error.to_string())
                                     }
                                 }
                             }
