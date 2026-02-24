@@ -3,9 +3,11 @@ use {
     ahash::HashMap,
     metrics::counter,
     richat_shared::mutex_lock,
+    solana_account_decoder::parse_account_data::AccountAdditionalDataV3,
     solana_commitment_config::CommitmentLevel,
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
     std::{
+        fmt,
         sync::{Arc, Mutex, mpsc},
         thread,
         time::{Duration, Instant},
@@ -22,6 +24,7 @@ enum ReadRequest {
         pubkeys: Vec<Pubkey>,
         commitment: CommitmentLevel,
         min_context_slot: Option<Slot>,
+        json_parsed: bool,
         tx: oneshot::Sender<ReadResultAccount>,
     },
     Slot {
@@ -33,7 +36,6 @@ enum ReadRequest {
     },
 }
 
-#[derive(Debug)]
 pub enum ReadResultAccount {
     ReqChanClosed,
     ReqChanFull,
@@ -45,11 +47,26 @@ pub enum ReadResultAccount {
     RequestFailed(String),
     Accounts {
         slot: Slot,
-        accounts: Vec<Arc<Account>>,
+        pubkeys: Vec<Pubkey>,
+        accounts: Vec<Option<Arc<Account>>>,
+        mints: HashMap<Pubkey, AccountAdditionalDataV3>,
     },
 }
 
-#[derive(Debug)]
+impl fmt::Debug for ReadResultAccount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReqChanClosed => write!(f, "ReqChanClosed"),
+            Self::ReqChanFull => write!(f, "ReqChanFull"),
+            Self::ReqDrop => write!(f, "ReqDrop"),
+            Self::Timeout => write!(f, "Timeout"),
+            Self::MinContextSlotNotReached { .. } => write!(f, "MinContextSlotNotReached"),
+            Self::RequestFailed(_) => write!(f, "RequestFailed"),
+            Self::Accounts { .. } => write!(f, "Accounts"),
+        }
+    }
+}
+
 pub enum ReadResultSlot {
     ReqChanClosed,
     ReqChanFull,
@@ -57,6 +74,19 @@ pub enum ReadResultSlot {
     Timeout,
     MinContextSlotNotReached { context_slot: Slot },
     Slot(Slot),
+}
+
+impl fmt::Debug for ReadResultSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReqChanClosed => write!(f, "ReqChanClosed"),
+            Self::ReqChanFull => write!(f, "ReqChanFull"),
+            Self::ReqDrop => write!(f, "ReqDrop"),
+            Self::Timeout => write!(f, "Timeout"),
+            Self::MinContextSlotNotReached { .. } => write!(f, "MinContextSlotNotReached"),
+            Self::Slot(_) => write!(f, "Slot"),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -157,6 +187,7 @@ impl Reader {
                             pubkeys,
                             commitment,
                             min_context_slot,
+                            json_parsed,
                             tx,
                         },
                     ) => {
@@ -224,12 +255,9 @@ impl Reader {
                                 } else {
                                     ReadResultAccount::Accounts {
                                         slot,
-                                        accounts: accounts
-                                            .into_iter()
-                                            .map(|a| {
-                                                a.unwrap_or_else(|| Arc::new(Account::default()))
-                                            })
-                                            .collect(),
+                                        pubkeys,
+                                        accounts,
+                                        mints: Default::default(), // TODO
                                     }
                                 }
                             }
@@ -289,12 +317,13 @@ impl Reader {
         Ok(())
     }
 
-    pub async fn get_account(
+    pub async fn get_accounts(
         &self,
         x_subscription_id: Arc<str>,
         pubkeys: Vec<Pubkey>,
         commitment: CommitmentLevel,
         min_context_slot: Option<Slot>,
+        json_parsed: bool,
     ) -> ReadResultAccount {
         let (tx, rx) = oneshot::channel();
         match self.req_tx.try_send(ReadRequest::Account {
@@ -303,6 +332,7 @@ impl Reader {
             pubkeys,
             commitment,
             min_context_slot,
+            json_parsed,
             tx,
         }) {
             Ok(()) => {}

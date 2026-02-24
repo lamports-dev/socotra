@@ -3711,6 +3711,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "solana-account-decoder",
  "solana-commitment-config",
  "solana-rpc-client",
  "solana-sdk",
