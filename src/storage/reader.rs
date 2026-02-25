@@ -1,5 +1,8 @@
 use {
-    crate::{metrics::READ_REQUESTS_TOTAL, storage::rocksdb::Rocksdb},
+    crate::{
+        metrics::READ_REQUESTS_TOTAL,
+        storage::rocksdb::{GetAccountsError, Rocksdb},
+    },
     ahash::HashMap,
     metrics::counter,
     richat_shared::mutex_lock,
@@ -44,6 +47,7 @@ pub enum ReadResultAccount {
     MinContextSlotNotReached {
         context_slot: Slot,
     },
+    TokenMintUnpackFailed,
     RequestFailed(String),
     Accounts {
         slot: Slot,
@@ -61,8 +65,19 @@ impl fmt::Debug for ReadResultAccount {
             Self::ReqDrop => write!(f, "ReqDrop"),
             Self::Timeout => write!(f, "Timeout"),
             Self::MinContextSlotNotReached { .. } => write!(f, "MinContextSlotNotReached"),
+            Self::TokenMintUnpackFailed => write!(f, "TokenMintUnpackFailed"),
             Self::RequestFailed(_) => write!(f, "RequestFailed"),
             Self::Accounts { .. } => write!(f, "Accounts"),
+        }
+    }
+}
+
+impl From<GetAccountsError> for ReadResultAccount {
+    fn from(value: GetAccountsError) -> Self {
+        if matches!(value, GetAccountsError::TokenMintUnpackFailed) {
+            Self::TokenMintUnpackFailed
+        } else {
+            Self::RequestFailed(value.to_string())
         }
     }
 }
@@ -221,7 +236,7 @@ impl Reader {
                                     &mut accounts,
                                     json_parsed,
                                     &mut mints,
-                                    |pubkey| {
+                                    |pubkey, commitment| {
                                         if commitment == CommitmentLevel::Processed {
                                             if let Some(account) = state.processed_map.get(pubkey) {
                                                 return Some(Arc::clone(&account));
@@ -237,6 +252,7 @@ impl Reader {
                                         }
                                         None
                                     },
+                                    commitment,
                                 ) {
                                     Ok(db_slot) => ReadResultAccount::Accounts {
                                         slot: if commitment == CommitmentLevel::Finalized {
@@ -248,9 +264,7 @@ impl Reader {
                                         accounts,
                                         mints,
                                     },
-                                    Err(error) => {
-                                        ReadResultAccount::RequestFailed(error.to_string())
-                                    }
+                                    Err(error) => error.into(),
                                 }
                             }
                         });

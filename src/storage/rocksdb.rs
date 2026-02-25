@@ -8,9 +8,23 @@ use {
         ColumnFamily, ColumnFamilyDescriptor, DB, DBCompressionType, IngestExternalFileOptions,
         Options, WriteBatch,
     },
-    solana_account_decoder::parse_account_data::AccountAdditionalDataV3,
+    solana_account_decoder::{
+        parse_account_data::{AccountAdditionalDataV3, SplTokenAdditionalDataV2},
+        parse_token::{get_token_account_mint, is_known_spl_token_id},
+    },
     solana_commitment_config::CommitmentLevel,
-    solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
+    solana_sdk::{
+        account::Account,
+        clock::{Slot, UnixTimestamp},
+        pubkey::Pubkey,
+    },
+    spl_token_2022_interface::{
+        extension::{
+            BaseStateWithExtensions, StateWithExtensions,
+            interest_bearing_mint::InterestBearingConfig, scaled_ui_amount::ScaledUiAmountConfig,
+        },
+        state::Mint,
+    },
     std::{
         path::{Path, PathBuf},
         sync::Arc,
@@ -132,6 +146,8 @@ pub enum GetAccountsError {
     DecodeSlot(anyhow::Error),
     #[error("decode account: {0}")]
     DecodeAccount(#[from] prost::DecodeError),
+    #[error("Invalid param: Token mint could not be unpacked")]
+    TokenMintUnpackFailed,
 }
 
 #[derive(Debug, Clone)]
@@ -313,7 +329,8 @@ impl Rocksdb {
         accounts: &mut [Option<Arc<Account>>],
         json_parsed: bool,
         mints: &mut HashMap<Pubkey, AccountAdditionalDataV3>,
-        get_account: impl Fn(&Pubkey) -> Option<Arc<Account>>,
+        get_account: impl Fn(&Pubkey, CommitmentLevel) -> Option<Arc<Account>>,
+        commitment: CommitmentLevel,
     ) -> Result<Slot, GetAccountsError> {
         let snapshot = self.db.snapshot();
 
@@ -331,7 +348,7 @@ impl Rocksdb {
             .iter()
             .enumerate()
             .filter_map(|(i, pubkey)| {
-                accounts[i] = get_account(pubkey);
+                accounts[i] = get_account(pubkey, commitment);
                 accounts[i].is_none().then_some(i)
             })
             .collect();
@@ -350,4 +367,27 @@ impl Rocksdb {
 
         Ok(slot)
     }
+}
+
+fn get_additional_mint_data(
+    data: &[u8],
+    unix_timestamp: UnixTimestamp,
+) -> Result<SplTokenAdditionalDataV2, GetAccountsError> {
+    StateWithExtensions::<Mint>::unpack(data)
+        .map_err(|_| GetAccountsError::TokenMintUnpackFailed)
+        .map(|mint| {
+            let interest_bearing_config = mint
+                .get_extension::<InterestBearingConfig>()
+                .map(|x| (*x, unix_timestamp))
+                .ok();
+            let scaled_ui_amount_config = mint
+                .get_extension::<ScaledUiAmountConfig>()
+                .map(|x| (*x, unix_timestamp))
+                .ok();
+            SplTokenAdditionalDataV2 {
+                decimals: mint.base.decimals,
+                interest_bearing_config,
+                scaled_ui_amount_config,
+            }
+        })
 }
