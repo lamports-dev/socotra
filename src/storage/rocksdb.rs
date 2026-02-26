@@ -12,7 +12,6 @@ use {
         parse_account_data::{AccountAdditionalDataV3, SplTokenAdditionalDataV2},
         parse_token::{get_token_account_mint, is_known_spl_token_id},
     },
-    solana_commitment_config::CommitmentLevel,
     solana_sdk::{
         account::Account,
         clock::{Slot, UnixTimestamp},
@@ -329,8 +328,7 @@ impl Rocksdb {
         accounts: &mut [Option<Arc<Account>>],
         json_parsed: bool,
         mints: &mut HashMap<Pubkey, AccountAdditionalDataV3>,
-        get_account: impl Fn(&Pubkey, CommitmentLevel) -> Option<Arc<Account>>,
-        commitment: CommitmentLevel,
+        get_account: impl Fn(&Pubkey) -> Option<Arc<Account>>,
     ) -> Result<Slot, GetAccountsError> {
         let snapshot = self.db.snapshot();
 
@@ -348,7 +346,7 @@ impl Rocksdb {
             .iter()
             .enumerate()
             .filter_map(|(i, pubkey)| {
-                accounts[i] = get_account(pubkey, commitment);
+                accounts[i] = get_account(pubkey);
                 accounts[i].is_none().then_some(i)
             })
             .collect();
@@ -362,6 +360,74 @@ impl Rocksdb {
         for (idx, result) in indices.into_iter().zip(results) {
             if let Some(data) = result? {
                 accounts[idx] = Some(Arc::new(AccountIndexValue::decode(&data)?));
+            }
+        }
+
+        if json_parsed {
+            let mut mint_pubkeys: Vec<Pubkey> = Vec::new();
+            for account in accounts.iter().flatten() {
+                if is_known_spl_token_id(&account.owner)
+                    && let Some(mint_pubkey) = get_token_account_mint(&account.data)
+                    && !mint_pubkeys.contains(&mint_pubkey)
+                {
+                    mint_pubkeys.push(mint_pubkey);
+                }
+            }
+
+            if !mint_pubkeys.is_empty() {
+                let clock_id = solana_sdk::sysvar::clock::id();
+                let unix_timestamp = get_account(&clock_id)
+                    .or_else(|| {
+                        snapshot
+                            .get_cf(cf, AccountIndexKey::encode(&clock_id))
+                            .ok()
+                            .flatten()
+                            .and_then(|data| AccountIndexValue::decode(&data).ok())
+                            .map(Arc::new)
+                    })
+                    .and_then(|account| {
+                        // Clock layout: slot(8) + epoch_start_timestamp(8) + epoch(8) + leader_schedule_epoch(8) + unix_timestamp(8)
+                        account
+                            .data
+                            .get(32..40)
+                            .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+                    })
+                    .unwrap_or(0);
+
+                let mut mint_accounts: Vec<Option<Arc<Account>>> = vec![None; mint_pubkeys.len()];
+                let db_mint_indices: Vec<usize> = mint_pubkeys
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, pubkey)| {
+                        mint_accounts[i] = get_account(pubkey);
+                        mint_accounts[i].is_none().then_some(i)
+                    })
+                    .collect();
+
+                let mint_results = snapshot.multi_get_cf(
+                    db_mint_indices
+                        .iter()
+                        .map(|&i| (cf, AccountIndexKey::encode(&mint_pubkeys[i]))),
+                );
+
+                for (idx, result) in db_mint_indices.into_iter().zip(mint_results) {
+                    if let Some(data) = result? {
+                        mint_accounts[idx] = Some(Arc::new(AccountIndexValue::decode(&data)?));
+                    }
+                }
+
+                for (mint_pubkey, mint_account) in mint_pubkeys.into_iter().zip(mint_accounts) {
+                    if let Some(mint_account) = mint_account {
+                        let additional_data =
+                            get_additional_mint_data(&mint_account.data, unix_timestamp)?;
+                        mints.insert(
+                            mint_pubkey,
+                            AccountAdditionalDataV3 {
+                                spl_token_additional_data: Some(additional_data),
+                            },
+                        );
+                    }
+                }
             }
         }
 

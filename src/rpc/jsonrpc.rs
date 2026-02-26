@@ -378,6 +378,13 @@ impl RpcRequestAccounts {
                     RpcCustomError::MinContextSlotNotReached { context_slot },
                 ))
             }
+            ReadResultAccount::TokenMintUnpackFailed => Ok(jsonrpc_response_error(
+                self.id,
+                jsonrpc_error_invalid_params::<()>(
+                    "Invalid param: Token mint could not be unpacked".to_owned(),
+                    None,
+                ),
+            )),
             ReadResultAccount::RequestFailed(error) => {
                 anyhow::bail!("request to db failed: {error}")
             }

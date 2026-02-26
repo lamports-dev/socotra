@@ -236,23 +236,21 @@ impl Reader {
                                     &mut accounts,
                                     json_parsed,
                                     &mut mints,
-                                    |pubkey, commitment| {
-                                        if commitment == CommitmentLevel::Processed {
-                                            if let Some(account) = state.processed_map.get(pubkey) {
-                                                return Some(Arc::clone(&account));
-                                            }
+                                    |pubkey| {
+                                        if commitment == CommitmentLevel::Processed
+                                            && let Some(account) = state.processed_map.get(pubkey)
+                                        {
+                                            return Some(Arc::clone(account));
                                         }
                                         if matches!(
                                             commitment,
                                             CommitmentLevel::Processed | CommitmentLevel::Confirmed
-                                        ) {
-                                            if let Some(account) = state.confirmed_map.get(pubkey) {
-                                                return Some(Arc::clone(account));
-                                            }
+                                        ) && let Some(account) = state.confirmed_map.get(pubkey)
+                                        {
+                                            return Some(Arc::clone(account));
                                         }
                                         None
                                     },
-                                    commitment,
                                 ) {
                                     Ok(db_slot) => ReadResultAccount::Accounts {
                                         slot: if commitment == CommitmentLevel::Finalized {
