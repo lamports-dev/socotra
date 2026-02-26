@@ -1,10 +1,10 @@
 use {
     crate::{
-        metrics::READ_REQUESTS_TOTAL,
+        metrics::{READ_ACCOUNTS_BYTES_TOTAL, READ_ACCOUNTS_SECONDS_TOTAL, READ_REQUESTS_TOTAL},
         storage::rocksdb::{GetAccountsError, Rocksdb},
     },
     ahash::HashMap,
-    metrics::counter,
+    metrics::{counter, gauge},
     richat_shared::mutex_lock,
     solana_account_decoder::parse_account_data::AccountAdditionalDataV3,
     solana_commitment_config::CommitmentLevel,
@@ -211,7 +211,7 @@ impl Reader {
                         } else {
                             counter!(
                                 READ_REQUESTS_TOTAL,
-                                "x_subscription_id" => x_subscription_id,
+                                "x_subscription_id" => Arc::clone(&x_subscription_id),
                                 "type" => "account"
                             )
                             .increment(pubkeys.len() as u64);
@@ -231,7 +231,8 @@ impl Reader {
                                     vec![None; pubkeys.len()];
                                 let mut mints = HashMap::default();
 
-                                match db.get_accounts(
+                                let read_started_at = Instant::now();
+                                let result = match db.get_accounts(
                                     &pubkeys,
                                     &mut accounts,
                                     json_parsed,
@@ -252,18 +253,34 @@ impl Reader {
                                         None
                                     },
                                 ) {
-                                    Ok(db_slot) => ReadResultAccount::Accounts {
-                                        slot: if commitment == CommitmentLevel::Finalized {
-                                            db_slot
-                                        } else {
-                                            slot
-                                        },
-                                        pubkeys,
-                                        accounts,
-                                        mints,
-                                    },
+                                    Ok((db_slot, bytes_read)) => {
+                                        counter!(
+                                            READ_ACCOUNTS_BYTES_TOTAL,
+                                            "x_subscription_id" => Arc::clone(&x_subscription_id),
+                                        )
+                                        .increment(bytes_read);
+
+                                        ReadResultAccount::Accounts {
+                                            slot: if commitment == CommitmentLevel::Finalized {
+                                                db_slot
+                                            } else {
+                                                slot
+                                            },
+                                            pubkeys,
+                                            accounts,
+                                            mints,
+                                        }
+                                    }
                                     Err(error) => error.into(),
-                                }
+                                };
+
+                                gauge!(
+                                    READ_ACCOUNTS_SECONDS_TOTAL,
+                                    "x_subscription_id" => x_subscription_id,
+                                )
+                                .increment(read_started_at.elapsed().as_secs_f64());
+
+                                result
                             }
                         });
                     }

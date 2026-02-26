@@ -329,15 +329,16 @@ impl Rocksdb {
         json_parsed: bool,
         mints: &mut HashMap<Pubkey, AccountAdditionalDataV3>,
         get_account: impl Fn(&Pubkey) -> Option<Arc<Account>>,
-    ) -> Result<Slot, GetAccountsError> {
+    ) -> Result<(Slot, u64), GetAccountsError> {
         let snapshot = self.db.snapshot();
+        let mut bytes_read = 0u64;
 
-        let slot = snapshot
+        let slot_data = snapshot
             .get_cf(self.cf_handle::<SlotIndexKey>(), "slot")?
-            .map(|data| SlotIndexValue::decode(&data))
-            .transpose()
+            .ok_or(GetAccountsError::SlotNotFound)?;
+        bytes_read += slot_data.len() as u64;
+        let slot = SlotIndexValue::decode(&slot_data)
             .map_err(GetAccountsError::DecodeSlot)?
-            .ok_or(GetAccountsError::SlotNotFound)?
             .slot;
 
         let cf = self.cf_handle::<AccountIndexKey>();
@@ -359,6 +360,7 @@ impl Rocksdb {
 
         for (idx, result) in indices.into_iter().zip(results) {
             if let Some(data) = result? {
+                bytes_read += data.len() as u64;
                 accounts[idx] = Some(Arc::new(AccountIndexValue::decode(&data)?));
             }
         }
@@ -376,15 +378,15 @@ impl Rocksdb {
 
             if !mint_pubkeys.is_empty() {
                 let clock_id = solana_sdk::sysvar::clock::id();
-                let unix_timestamp = get_account(&clock_id)
-                    .or_else(|| {
-                        snapshot
-                            .get_cf(cf, AccountIndexKey::encode(&clock_id))
-                            .ok()
-                            .flatten()
-                            .and_then(|data| AccountIndexValue::decode(&data).ok())
-                            .map(Arc::new)
-                    })
+                let clock_account = get_account(&clock_id).or_else(|| {
+                    let data = snapshot
+                        .get_cf(cf, AccountIndexKey::encode(&clock_id))
+                        .ok()
+                        .flatten()?;
+                    bytes_read += data.len() as u64;
+                    AccountIndexValue::decode(&data).ok().map(Arc::new)
+                });
+                let unix_timestamp = clock_account
                     .and_then(|account| {
                         // Clock layout: slot(8) + epoch_start_timestamp(8) + epoch(8) + leader_schedule_epoch(8) + unix_timestamp(8)
                         account
@@ -412,6 +414,7 @@ impl Rocksdb {
 
                 for (idx, result) in db_mint_indices.into_iter().zip(mint_results) {
                     if let Some(data) = result? {
+                        bytes_read += data.len() as u64;
                         mint_accounts[idx] = Some(Arc::new(AccountIndexValue::decode(&data)?));
                     }
                 }
@@ -431,7 +434,7 @@ impl Rocksdb {
             }
         }
 
-        Ok(slot)
+        Ok((slot, bytes_read))
     }
 }
 

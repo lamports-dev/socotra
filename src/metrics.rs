@@ -1,6 +1,6 @@
 use {
     anyhow::Context,
-    metrics::{counter, describe_counter, describe_histogram},
+    metrics::{counter, describe_counter, describe_gauge, describe_histogram},
     metrics_exporter_prometheus::{Matcher, PrometheusBuilder, PrometheusHandle},
     richat_shared::jsonrpc::metrics::{
         RPC_REQUESTS_DURATION_SECONDS, describe as describe_jsonrpc_metrics,
@@ -16,6 +16,8 @@ pub const WRITE_BLOCK_SYNC_SECONDS: &str = "write_block_sync_seconds";
 pub const BUILD_READER_STATE_SECONDS: &str = "build_reader_state_seconds";
 
 pub const READ_REQUESTS_TOTAL: &str = "read_requests_total"; // x_subscription_id, type
+pub const READ_ACCOUNTS_SECONDS_TOTAL: &str = "read_accounts_seconds_total"; // x_subscription_id
+pub const READ_ACCOUNTS_BYTES_TOTAL: &str = "read_accounts_bytes_total"; // x_subscription_id
 
 pub fn setup() -> anyhow::Result<PrometheusHandle> {
     let default_buckets = &[
@@ -56,6 +58,14 @@ pub fn setup() -> anyhow::Result<PrometheusHandle> {
     describe_histogram!(WRITE_BLOCK_SYNC_SECONDS, "Write block sync time");
     describe_histogram!(BUILD_READER_STATE_SECONDS, "Build reader state time");
     describe_counter!(READ_REQUESTS_TOTAL, "Total account/slot lookups processed");
+    describe_gauge!(
+        READ_ACCOUNTS_SECONDS_TOTAL,
+        "Total time spent reading accounts"
+    );
+    describe_counter!(
+        READ_ACCOUNTS_BYTES_TOTAL,
+        "Total bytes read from accounts storage"
+    );
 
     Ok(handle)
 }
