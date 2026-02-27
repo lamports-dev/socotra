@@ -322,6 +322,7 @@ impl Rocksdb {
         }
     }
 
+    #[instrument(skip_all, fields(pubkeys = pubkeys.len()))]
     pub fn get_accounts(
         &self,
         pubkeys: &[Pubkey],
@@ -366,6 +367,8 @@ impl Rocksdb {
         }
 
         if json_parsed {
+            let _span = info_span!("json_parsed").entered();
+
             let mut mint_pubkeys: Vec<Pubkey> = Vec::new();
             for account in accounts.iter().flatten() {
                 if is_known_spl_token_id(&account.owner)

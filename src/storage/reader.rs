@@ -17,11 +17,13 @@ use {
     },
     tokio::sync::{broadcast, oneshot},
     tokio_util::sync::CancellationToken,
+    tracing::{Span, info_span},
 };
 
 #[derive(Debug)]
 enum ReadRequest {
     Account {
+        parent: Span,
         deadline: Instant,
         x_subscription_id: Arc<str>,
         pubkeys: Vec<Pubkey>,
@@ -31,6 +33,7 @@ enum ReadRequest {
         tx: oneshot::Sender<ReadResultAccount>,
     },
     Slot {
+        parent: Span,
         deadline: Instant,
         x_subscription_id: Arc<str>,
         commitment: CommitmentLevel,
@@ -197,6 +200,7 @@ impl Reader {
                     (
                         Some(state),
                         ReadRequest::Account {
+                            parent,
                             deadline,
                             x_subscription_id,
                             pubkeys,
@@ -206,6 +210,7 @@ impl Reader {
                             tx,
                         },
                     ) => {
+                        let _guard = info_span!(parent: parent, "read_worker").entered();
                         let _ = tx.send(if deadline < started_at {
                             ReadResultAccount::Timeout
                         } else {
@@ -287,6 +292,7 @@ impl Reader {
                     (
                         Some(state),
                         ReadRequest::Slot {
+                            parent,
                             deadline,
                             x_subscription_id,
                             commitment,
@@ -294,6 +300,7 @@ impl Reader {
                             tx,
                         },
                     ) => {
+                        let _guard = info_span!(parent: parent, "read_worker").entered();
                         let _ = tx.send(if deadline < started_at {
                             ReadResultSlot::Timeout
                         } else {
@@ -348,6 +355,7 @@ impl Reader {
     ) -> ReadResultAccount {
         let (tx, rx) = oneshot::channel();
         match self.req_tx.try_send(ReadRequest::Account {
+            parent: Span::current(),
             deadline: Instant::now() + self.read_timeout,
             x_subscription_id,
             pubkeys,
@@ -375,6 +383,7 @@ impl Reader {
     ) -> ReadResultSlot {
         let (tx, rx) = oneshot::channel();
         match self.req_tx.try_send(ReadRequest::Slot {
+            parent: Span::current(),
             deadline: Instant::now() + self.read_timeout,
             x_subscription_id,
             commitment,

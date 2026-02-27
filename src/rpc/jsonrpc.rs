@@ -30,6 +30,7 @@ use {
     },
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
     std::sync::Arc,
+    tracing::{Instrument, info_span},
 };
 
 #[derive(Debug)]
@@ -69,10 +70,19 @@ trait RpcRequestHandler: Sized {
         Self: Send,
     {
         Box::pin(async move {
-            match Self::parse(state, x_subscription_id, upstream_disabled, request) {
-                Ok(req) => req.process().await,
-                Err(response) => Ok(response),
+            let span = info_span!("rpc_request", method = request.method.as_ref());
+            async move {
+                let req = {
+                    let _parse = info_span!("rpc_parse").entered();
+                    Self::parse(state, x_subscription_id, upstream_disabled, request)
+                };
+                match req {
+                    Ok(req) => req.process().instrument(info_span!("rpc_process")).await,
+                    Err(response) => Ok(response),
+                }
             }
+            .instrument(span)
+            .await
         })
     }
 
