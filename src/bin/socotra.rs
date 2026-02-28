@@ -9,15 +9,19 @@ use {
         iterator::Signals,
     },
     socotra::{
-        config::Config,
+        config::{Config, ConfigStorageInit},
         metrics, rpc, source,
-        storage::{blocks, reader::Reader, rocksdb::Rocksdb},
+        storage::{
+            blocks,
+            reader::Reader,
+            rocksdb::{Rocksdb, SlotIndexValue},
+        },
     },
     std::{
         future::ready,
         io::{self, IsTerminal},
         thread::{self, sleep},
-        time::Duration,
+        time::{Duration, Instant},
     },
     tokio::sync::mpsc,
     tokio_util::sync::CancellationToken,
@@ -33,15 +37,23 @@ struct Args {
     pub config: String,
 
     /// Only check config and exit
-    #[clap(long, default_value_t = false)]
+    #[clap(long)]
     pub check: bool,
+
+    /// Debug: fetch current slot from RPC and store it, skipping catching tip
+    #[clap(long)]
+    pub skip_catching_tip: bool,
 }
 
 fn main() {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("install default CryptoProvider");
+
     if let Err(err) = try_main() {
         match std::env::var_os("RUST_BACKTRACE") {
-            Some(value) if value == *"0" => eprintln!("Error: {err}"),
-            None => eprintln!("Error: {err}"),
+            Some(value) if value == "0" => eprintln!("Error: {err:#}"),
+            None => eprintln!("Error: {err:#}"),
             _ => eprintln!("Error: {err:?}"),
         }
         std::process::exit(1);
@@ -94,6 +106,8 @@ fn try_main() -> anyhow::Result<()> {
     // Source
     let jh = thread::Builder::new().name("socSource".to_owned()).spawn({
         let runtime = config.source.tokio.clone().build_runtime("socSourceRt")?;
+        let skip_catching_tip = args.skip_catching_tip;
+        let rpc_endpoint = config.source.rpc.clone();
         let reader = reader.clone();
         let shutdown = shutdown.clone();
         move || {
@@ -104,36 +118,83 @@ fn try_main() -> anyhow::Result<()> {
                 {
                     Some(value) => {
                         info!(slot = value.slot, "latest stored slot (db)");
+                        if skip_catching_tip {
+                            let slot_info =
+                                source::rpc::get_confirmed_slot(rpc_endpoint.clone()).await?;
+                            db.store_slot_info(slot_info)?;
+                            warn!(
+                                slot = slot_info.slot,
+                                height = slot_info.height,
+                                "update stored slot (skip catching tip)"
+                            );
+                        }
                         (value, ready(Ok(db)).boxed())
                     }
-                    None => {
-                        let value =
-                            source::rpc::get_confirmed_slot(storage_init_config.endpoint.clone())
+                    None => match storage_init_config {
+                        ConfigStorageInit::Snapshot { path } => {
+                            let slot = source::snapshot::read_snapshot_slot(&path).await?;
+                            let height = source::rpc::get_block_height(&rpc_endpoint, slot).await?;
+                            let mut value = SlotIndexValue { slot, height };
+                            info!(slot, height, "latest stored slot (snapshot)");
+                            if skip_catching_tip {
+                                value =
+                                    source::rpc::get_confirmed_slot(rpc_endpoint.clone()).await?;
+                                warn!(
+                                    slot = value.slot,
+                                    height = value.height,
+                                    "use confirmed slot (skip catching tip)"
+                                );
+                            }
+
+                            let shutdown = shutdown.clone();
+                            let fetch_state_fut = async move {
+                                let ts = Instant::now();
+                                source::snapshot::load_snapshot_accounts(
+                                    db.clone(),
+                                    path,
+                                    shutdown,
+                                )
+                                .await
+                                .context("failed to load snapshot")?;
+                                info!(elapsed = ?ts.elapsed(), "snapshot loaded");
+                                db.store_slot_info(value)?;
+                                anyhow::Ok(db)
+                            };
+
+                            (value, fetch_state_fut.boxed())
+                        }
+                        ConfigStorageInit::Endpoint { endpoint, segments } => {
+                            let value = source::rpc::get_confirmed_slot(endpoint.clone())
                                 .await
                                 .context("failed to get confirmed slot")?;
-                        info!(slot = value.slot, "latest stored slot (rpc)");
+                            info!(
+                                slot = value.slot,
+                                height = value.height,
+                                "latest stored slot (rpc)"
+                            );
 
-                        let config = storage_init_config;
-                        let shutdown = shutdown.clone();
-                        let fetch_state_fut = async move {
-                            let sst_files = source::rpc::fetch_confirmed_state(
-                                &db,
-                                value.slot,
-                                &config,
-                                shutdown.clone(),
-                            )
-                            .await?;
-                            if !shutdown.is_cancelled()
-                                && let Err(error) = db.sst_ingest(sst_files, value)
-                            {
-                                db.destroy();
-                                return Err(error).context("failed to consume sst files");
-                            }
-                            Ok::<_, anyhow::Error>(db)
-                        };
+                            let shutdown = shutdown.clone();
+                            let fetch_state_fut = async move {
+                                let sst_files = source::rpc::fetch_confirmed_state(
+                                    &db,
+                                    value.slot,
+                                    &endpoint,
+                                    segments,
+                                    shutdown.clone(),
+                                )
+                                .await?;
+                                if !shutdown.is_cancelled()
+                                    && let Err(error) = db.sst_ingest(sst_files, value)
+                                {
+                                    db.destroy();
+                                    return Err(error).context("failed to consume sst files");
+                                }
+                                Ok::<_, anyhow::Error>(db)
+                            };
 
-                        (value, fetch_state_fut.boxed())
-                    }
+                            (value, fetch_state_fut.boxed())
+                        }
+                    },
                 };
 
                 let (geyser_update_tx, geyser_update_rx) =

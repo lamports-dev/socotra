@@ -262,11 +262,24 @@ impl Rocksdb {
             .context("failed to ingest SST files")?;
         info!(elapsed = ?ts.elapsed(), "db created from sst files");
 
-        self.db
-            .put_cf(self.cf_handle::<SlotIndexKey>(), "slot", slot_info.encode())
-            .context("failed to store slot value")?;
+        self.store_slot_info(slot_info)?;
 
         Ok(())
+    }
+
+    /// Write a batch of accounts directly, without updating slot info.
+    pub fn store_accounts(&self, accounts: &[(Pubkey, Account)]) -> anyhow::Result<()> {
+        let mut batch = WriteBatch::with_capacity_bytes(32 * 1024 * 1024); // 32MiB
+        let cf = self.cf_handle::<AccountIndexKey>();
+        let mut buf = Vec::new();
+        for (pubkey, account) in accounts {
+            buf.clear();
+            AccountIndexValue::encode(account, &mut buf);
+            batch.put_cf(cf, AccountIndexKey::encode(pubkey), &buf);
+        }
+        self.db
+            .write(batch)
+            .context("failed to write accounts batch")
     }
 
     pub fn destroy(self) {
@@ -274,6 +287,12 @@ impl Rocksdb {
             drop(db);
             let _ = DB::destroy(&Options::default(), &self.path);
         }
+    }
+
+    pub fn store_slot_info(&self, slot_info: SlotIndexValue) -> anyhow::Result<()> {
+        self.db
+            .put_cf(self.cf_handle::<SlotIndexKey>(), "slot", slot_info.encode())
+            .context("failed to store slot value")
     }
 
     pub fn get_state_slot_info(&self) -> anyhow::Result<Option<SlotIndexValue>> {

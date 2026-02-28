@@ -43,14 +43,26 @@ impl Default for ConfigMonitoring {
     }
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ConfigSource {
     /// Tokio runtime for Source
     pub tokio: ConfigTokio,
+    pub rpc: String,
     pub reconnect: Option<ConfigSourceReconnect>,
     #[serde(flatten)]
     pub config: ConfigGrpcClient,
+}
+
+impl Default for ConfigSource {
+    fn default() -> Self {
+        Self {
+            tokio: ConfigTokio::default(),
+            rpc: "http://127.0.0.1:8899".to_owned(),
+            reconnect: None,
+            config: ConfigGrpcClient::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -109,11 +121,16 @@ impl From<ConfigStorageRocksdbCompression> for DBCompressionType {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigStorageInit {
-    pub endpoint: String,
-    #[serde(default = "ConfigStorageInit::default_segments")]
-    pub segments: u8,
+#[serde(deny_unknown_fields, tag = "type", rename_all = "lowercase")]
+pub enum ConfigStorageInit {
+    Snapshot {
+        path: PathBuf,
+    },
+    Endpoint {
+        endpoint: String,
+        #[serde(default = "ConfigStorageInit::default_segments")]
+        segments: u8,
+    },
 }
 
 impl ConfigStorageInit {

@@ -5,6 +5,7 @@ source:
   tokio:
     worker_threads: null # Number of threads in Tokio runtime, by default all available cores
     affinity: null # Pin threads to specific CPUs, optional (taskset syntax)
+  rpc: http://127.0.0.1:8899
   # reconnect:
   #   backoff_init: 100ms
   #   backoff_max: 1s
@@ -30,8 +31,11 @@ storage:
   path: ./db
   compression: none # none, snappy, zlib, bz2, lz4, lz4hc, zstd
   init:
-    endpoint: http://127.0.0.1:8899
-    segments: 16
+    type: snapshot
+    path: /path/file/snapshot.tar.zst
+    # type: endpoint
+    # endpoint: http://127.0.0.1:8899
+    # segments: 16
   blocks:
     updates_channel_size: 512
     request_channel_capacity: 131_072

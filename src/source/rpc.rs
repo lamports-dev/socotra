@@ -1,8 +1,5 @@
 use {
-    crate::{
-        config::ConfigStorageInit,
-        storage::rocksdb::{Rocksdb, SlotIndexValue},
-    },
+    crate::storage::rocksdb::{Rocksdb, SlotIndexValue},
     anyhow::Context as _,
     bytes::{Bytes, BytesMut},
     futures::{StreamExt, future::try_join_all, stream::Stream},
@@ -23,29 +20,30 @@ use {
     tracing::info,
 };
 
-pub async fn get_confirmed_slot(endpoint: String) -> anyhow::Result<SlotIndexValue> {
-    let rpc = RpcClient::new(endpoint);
+pub async fn get_block_height(endpoint: &str, slot: Slot) -> anyhow::Result<Slot> {
+    let rpc = RpcClient::new(endpoint.to_owned());
+    rpc.get_block_with_config(
+        slot,
+        RpcBlockConfig {
+            encoding: Some(UiTransactionEncoding::Base64),
+            transaction_details: Some(TransactionDetails::None),
+            rewards: Some(false),
+            commitment: Some(CommitmentConfig::confirmed()),
+            max_supported_transaction_version: Some(u8::MAX),
+        },
+    )
+    .await
+    .context("failed to get block")?
+    .block_height
+    .context("no height in received block")
+}
 
-    let slot = rpc
+pub async fn get_confirmed_slot(endpoint: String) -> anyhow::Result<SlotIndexValue> {
+    let slot = RpcClient::new(endpoint.clone())
         .get_slot_with_commitment(CommitmentConfig::confirmed())
         .await
         .context("failed to get confirmed slot")?;
-    let height = rpc
-        .get_block_with_config(
-            slot,
-            RpcBlockConfig {
-                encoding: Some(UiTransactionEncoding::Base64),
-                transaction_details: Some(TransactionDetails::None),
-                rewards: Some(false),
-                commitment: Some(CommitmentConfig::confirmed()),
-                max_supported_transaction_version: Some(u8::MAX),
-            },
-        )
-        .await
-        .context("failed to get confirmed block")?
-        .block_height
-        .context("no height in received confirmed block")?;
-
+    let height = get_block_height(&endpoint, slot).await?;
     Ok(SlotIndexValue { slot, height })
 }
 
@@ -61,19 +59,16 @@ pub async fn get_confirmed_slot(endpoint: String) -> anyhow::Result<SlotIndexVal
 pub async fn fetch_confirmed_state(
     db: &Rocksdb,
     slot: Slot,
-    config: &ConfigStorageInit,
+    endpoint: &str,
+    segments: u8,
     shutdown: CancellationToken,
 ) -> anyhow::Result<Vec<PathBuf>> {
     anyhow::ensure!(
-        config.segments.is_power_of_two() && config.segments <= 64,
+        segments.is_power_of_two() && segments <= 64,
         "segments must be a power of two and <= 64"
     );
 
-    // tokio::fs::create_dir_all(&config.path)
-    //     .await
-    //     .context("failed to create output directory")?;
-
-    let url = Url::parse(&config.endpoint)
+    let url = Url::parse(endpoint)
         .context("failed to parse endpoint")?
         .join(&format!("/get-account-state/{slot}"))
         .context("failed to create base endpoint")?;
@@ -81,11 +76,10 @@ pub async fn fetch_confirmed_state(
     // segments is power of two, so we can use leading bits to divide the range
     // e.g., segments=4 means we split by first 2 bits: [0x00.., 0x40.., 0x80.., 0xC0..]
     // segments=64 means first 6 bits: [0x00.., 0x04.., 0x08.., ..., 0xFC..]
-    let shift = 8 - config.segments.trailing_zeros() as u8; // bits to shift within first byte
+    let shift = 8 - segments.trailing_zeros() as u8; // bits to shift within first byte
 
-    let (sst_files, sst_options): (Vec<PathBuf>, Vec<_>) = (0..config.segments)
-        .map(|segment| db.sst_config(segment))
-        .unzip();
+    let (sst_files, sst_options): (Vec<PathBuf>, Vec<_>) =
+        (0..segments).map(|segment| db.sst_config(segment)).unzip();
 
     let ts = Instant::now();
     let mut handles: Vec<_> = sst_files
