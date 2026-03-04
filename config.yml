@@ -37,7 +37,6 @@ storage:
     # type: endpoint
     # endpoint: http://127.0.0.1:8899
     # segments: 16
-  # init_buffer_path: /tmp/socotra_geyser_buffer.bin  # disk buffer during snapshot init
   blocks:
     updates_channel_size: 512
     request_channel_capacity: 131_072

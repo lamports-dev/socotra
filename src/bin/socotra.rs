@@ -84,9 +84,9 @@ fn try_main() -> anyhow::Result<()> {
     let shutdown = CancellationToken::new();
 
     // Open storage
-    let storage_init_config = config.storage.init;
     let storage_blocks_config = config.storage.blocks;
-    let storage_init_buffer_path = config.storage.init_buffer_path;
+    let storage_init_config = config.storage.init;
+    let storage_init_buffer_path = config.storage.path.join("geyser_buffer.bin");
     let db = Rocksdb::open(config.storage.path, config.storage.compression)?;
     let (reader, reader_threads) = Reader::new(
         db.clone(),

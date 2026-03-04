@@ -271,7 +271,7 @@ impl Rocksdb {
     pub fn store_accounts(&self, accounts: &[(Pubkey, Account)]) -> anyhow::Result<()> {
         let mut batch = WriteBatch::with_capacity_bytes(32 * 1024 * 1024); // 32MiB
         let cf = self.cf_handle::<AccountIndexKey>();
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(16 * 1024 * 1024); // 16MiB
         for (pubkey, account) in accounts {
             buf.clear();
             AccountIndexValue::encode(account, &mut buf);

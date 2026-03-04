@@ -237,19 +237,16 @@ impl DiskBufferReader {
 }
 
 pub async fn start(
-    init_buffer_path: Option<PathBuf>,
+    init_buffer_path: PathBuf,
     mut db_ready_fut: impl Future<Output = anyhow::Result<Rocksdb>> + Unpin,
     mut latest_stored_slot: SlotIndexValue,
     mut geyser_update_rx: mpsc::Receiver<GeyserMessage>,
     reader: Reader,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    let mut disk_buffer = match init_buffer_path.clone() {
-        Some(path) => Some(DiskBuffer::new(path).await?),
-        None => None,
-    };
-    let mut messages = VecDeque::new();
     let mut slots = BTreeMap::<Slot, Block>::default();
+    let mut disk_buffer = DiskBuffer::new(init_buffer_path).await?;
+    let mut messages = VecDeque::new();
 
     // Buffer messages while DB initializes
     let db = loop {
@@ -257,11 +254,7 @@ pub async fn start(
             db_result = &mut db_ready_fut => break db_result?,
             msg = geyser_update_rx.recv() => match msg {
                 Some(msg) => {
-                    if let Some(buf) = &mut disk_buffer {
-                        buf.push(&msg).await?;
-                    } else {
-                        messages.push_back(msg);
-                    }
+                    disk_buffer.push(&msg).await?;
                 }
                 None => {
                     anyhow::ensure!(shutdown.is_cancelled(), "failed to get message from update channel");
@@ -270,6 +263,18 @@ pub async fn start(
             },
             () = shutdown.cancelled() => return Ok(()),
         }
+    };
+
+    // Replay buffered messages
+    let mut disk_reader = if disk_buffer.count > 0 {
+        info!(
+            count = disk_buffer.count,
+            "replaying messages from disk buffer"
+        );
+        Some(disk_buffer.into_reader().await?)
+    } else {
+        drop(disk_buffer);
+        None
     };
 
     // Dedicated thread for blocking rocksdb writes
@@ -286,15 +291,6 @@ pub async fn start(
             }
         })
         .context("failed to spawn store thread")?;
-
-    // Replay buffered messages
-    let mut disk_reader = match disk_buffer.take() {
-        Some(buf) if buf.count > 0 => {
-            info!(count = buf.count, "replaying messages from disk buffer");
-            Some(buf.into_reader().await?)
-        }
-        _ => None,
-    };
 
     // Process messages: replay from disk first, then switch to live channel
     while !shutdown.is_cancelled() {
