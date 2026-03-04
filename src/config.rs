@@ -125,6 +125,10 @@ impl From<ConfigStorageRocksdbCompression> for DBCompressionType {
 pub enum ConfigStorageInit {
     Snapshot {
         path: PathBuf,
+        #[serde(default = "ConfigStorageInit::default_accounts_read_concurrency")]
+        accounts_read_concurrency: usize,
+        #[serde(default = "ConfigStorageInit::default_sst_write_concurrency")]
+        sst_write_concurrency: usize,
     },
     Endpoint {
         endpoint: String,
@@ -136,6 +140,14 @@ pub enum ConfigStorageInit {
 impl ConfigStorageInit {
     const fn default_segments() -> u8 {
         16
+    }
+
+    const fn default_accounts_read_concurrency() -> usize {
+        64
+    }
+
+    const fn default_sst_write_concurrency() -> usize {
+        32
     }
 }
 

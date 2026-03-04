@@ -20,8 +20,6 @@ use {
     tracing::info,
 };
 
-const SNAPSHOT_READ_CONCURRENCY: usize = 64;
-const SST_WRITE_CONCURRENCY: usize = 32;
 const NUM_SHARDS: usize = 16;
 const BUCKETS_PER_SHARD: usize = 256 / NUM_SHARDS; // 16
 
@@ -44,6 +42,8 @@ pub async fn load_snapshot_accounts(
     db: Rocksdb,
     snapshot_path: PathBuf,
     db_path: PathBuf,
+    accounts_read_concurrency: usize,
+    sst_write_concurrency: usize,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     // Discover account files
@@ -62,7 +62,7 @@ pub async fn load_snapshot_accounts(
     let mut writer_handles = Vec::with_capacity(NUM_SHARDS);
 
     for shard_id in 0..NUM_SHARDS {
-        let (tx, rx) = mpsc::channel::<AccountBatch>(SNAPSHOT_READ_CONCURRENCY);
+        let (tx, rx) = mpsc::channel::<AccountBatch>(accounts_read_concurrency);
         shard_txs.push(tx);
 
         let shard_path = db_path.join(format!("snapshot_shard_{shard_id}.bin"));
@@ -131,7 +131,7 @@ pub async fn load_snapshot_accounts(
             anyhow::Ok(batch)
         });
 
-        if workers.len() > SNAPSHOT_READ_CONCURRENCY
+        if workers.len() > accounts_read_concurrency
             && let Some(result) = workers.join_next().await
         {
             dispatch_batch(result??, &shard_txs).await?;
@@ -168,7 +168,7 @@ pub async fn load_snapshot_accounts(
     let ts = Instant::now();
     let num_sst = all_buckets.iter().filter(|(_, m)| !m.is_empty()).count();
 
-    let semaphore = Arc::new(Semaphore::new(SST_WRITE_CONCURRENCY));
+    let semaphore = Arc::new(Semaphore::new(sst_write_concurrency));
     let mut sst_workers = JoinSet::new();
     let mut sst_files = Vec::with_capacity(num_sst);
 

@@ -132,7 +132,11 @@ fn try_main() -> anyhow::Result<()> {
                         (value, ready(Ok(db)).boxed())
                     }
                     None => match storage_init_config {
-                        ConfigStorageInit::Snapshot { path } => {
+                        ConfigStorageInit::Snapshot {
+                            path,
+                            accounts_read_concurrency,
+                            sst_write_concurrency,
+                        } => {
                             let slot = source::snapshot::read_snapshot_slot(&path)?;
                             let height = source::rpc::get_block_height(&rpc_endpoint, slot).await?;
                             let mut value = SlotIndexValue { slot, height };
@@ -154,6 +158,8 @@ fn try_main() -> anyhow::Result<()> {
                                     db.clone(),
                                     path,
                                     db_path,
+                                    accounts_read_concurrency,
+                                    sst_write_concurrency,
                                     shutdown,
                                 )
                                 .await
