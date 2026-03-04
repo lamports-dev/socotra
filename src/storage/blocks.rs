@@ -1,6 +1,6 @@
 use {
     crate::{
-        metrics::{BUILD_READER_STATE_SECONDS, WRITE_BLOCK_SYNC_SECONDS},
+        metrics::{BUILD_READER_STATE_SECONDS, STORED_SLOT, WRITE_BLOCK_SYNC_SECONDS},
         source::grpc::GeyserMessage,
         storage::{
             reader::{Reader, ReaderState},
@@ -9,7 +9,7 @@ use {
     },
     ahash::HashMap,
     anyhow::Context,
-    metrics::histogram,
+    metrics::{gauge, histogram},
     richat_metrics::duration_to_seconds,
     richat_proto::geyser::SlotStatus,
     serde::{Deserialize, Serialize},
@@ -521,6 +521,10 @@ fn build_reader_state(
             next_height = height + 1;
         }
     }
+
+    gauge!(STORED_SLOT, "commitment" => "processed").set(processed_slot as f64);
+    gauge!(STORED_SLOT, "commitment" => "confirmed").set(confirmed_slot as f64);
+    gauge!(STORED_SLOT, "commitment" => "finalized").set(latest_stored_slot.slot as f64);
 
     Ok(ReaderState {
         processed_slot,

@@ -12,6 +12,8 @@ use {
     },
 };
 
+pub const STORED_SLOT: &str = "stored_slot";
+
 pub const WRITE_BLOCK_SYNC_SECONDS: &str = "write_block_sync_seconds";
 pub const BUILD_READER_STATE_SECONDS: &str = "build_reader_state_seconds";
 
@@ -55,8 +57,11 @@ pub fn setup() -> anyhow::Result<PrometheusHandle> {
     )
     .absolute(1);
 
+    describe_gauge!(STORED_SLOT, "Current stored slot by commitment level");
+
     describe_histogram!(WRITE_BLOCK_SYNC_SECONDS, "Write block sync time");
     describe_histogram!(BUILD_READER_STATE_SECONDS, "Build reader state time");
+
     describe_counter!(READ_REQUESTS_TOTAL, "Total account/slot lookups processed");
     describe_gauge!(
         READ_ACCOUNTS_SECONDS_TOTAL,

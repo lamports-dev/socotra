@@ -34,6 +34,8 @@ storage:
   init:
     type: snapshot
     path: /path/file/snapshot.tar.zst
+    accounts_read_concurrency: 64
+    sst_write_concurrency: 32
     # type: endpoint
     # endpoint: http://127.0.0.1:8899
     # segments: 16
