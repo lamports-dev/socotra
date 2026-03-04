@@ -18,12 +18,13 @@ use {
         collections::{BTreeMap, VecDeque},
         path::PathBuf,
         sync::Arc,
+        thread,
         time::{Duration, Instant},
     },
     tokio::{
         fs,
         io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
-        sync::mpsc,
+        sync::{mpsc, oneshot},
     },
     tokio_util::sync::CancellationToken,
     tracing::{info, info_span, instrument, warn},
@@ -271,6 +272,21 @@ pub async fn start(
         }
     };
 
+    // Dedicated thread for blocking rocksdb writes
+    let (store_tx, store_rx) = std::sync::mpsc::channel::<StoreRequest>();
+    let store_thread = thread::Builder::new()
+        .name("socBlocksStore".to_owned())
+        .spawn({
+            let db = db.clone();
+            move || {
+                for req in store_rx {
+                    let result = db.store_new_state(req.slot_info, req.accounts.into_iter());
+                    let _ = req.result_tx.send(result);
+                }
+            }
+        })
+        .context("failed to spawn store thread")?;
+
     // Replay buffered messages
     let mut disk_reader = match disk_buffer.take() {
         Some(buf) if buf.count > 0 => {
@@ -298,7 +314,9 @@ pub async fn start(
                     messages.pop_front()
                 };
                 match msg {
-                    Some(msg) => process_message(&db, &mut latest_stored_slot, &mut slots, msg)?,
+                    Some(msg) => {
+                        process_message(&store_tx, &mut latest_stored_slot, &mut slots, msg).await?
+                    }
                     None => break,
                 }
             }
@@ -327,11 +345,22 @@ pub async fn start(
         };
     }
 
+    drop(store_tx);
+    store_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("store thread panicked"))?;
+
     Ok(())
 }
 
-fn process_message(
-    db: &Rocksdb,
+struct StoreRequest {
+    slot_info: SlotIndexValue,
+    accounts: HashMap<Pubkey, Arc<Account>>,
+    result_tx: oneshot::Sender<anyhow::Result<()>>,
+}
+
+async fn process_message(
+    store_tx: &std::sync::mpsc::Sender<StoreRequest>,
     latest_stored_slot: &mut SlotIndexValue,
     slots: &mut BTreeMap<Slot, Block>,
     msg: GeyserMessage,
@@ -377,9 +406,17 @@ fn process_message(
                     );
                     *latest_stored_slot = SlotIndexValue { slot, height };
 
-                    // store new slot
+                    // store new slot on dedicated thread
+                    let (result_tx, result_rx) = oneshot::channel();
                     let ts = Instant::now();
-                    db.store_new_state(*latest_stored_slot, block.accounts.into_iter())?;
+                    store_tx
+                        .send(StoreRequest {
+                            slot_info: *latest_stored_slot,
+                            accounts: block.accounts,
+                            result_tx,
+                        })
+                        .map_err(|_| anyhow::anyhow!("store thread gone"))?;
+                    result_rx.await.context("store thread panicked")??;
                     histogram!(WRITE_BLOCK_SYNC_SECONDS).record(duration_to_seconds(ts.elapsed()));
                 }
                 SlotStatus::SlotDead => {
