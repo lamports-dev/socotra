@@ -86,6 +86,7 @@ fn try_main() -> anyhow::Result<()> {
     // Open storage
     let storage_init_config = config.storage.init;
     let storage_blocks_config = config.storage.blocks;
+    let storage_init_buffer_path = config.storage.init_buffer_path;
     let db = Rocksdb::open(config.storage.path, config.storage.compression)?;
     let (reader, reader_threads) = Reader::new(
         db.clone(),
@@ -116,15 +117,14 @@ fn try_main() -> anyhow::Result<()> {
                     .get_state_slot_info()
                     .context("failed to get state slot")?
                 {
-                    Some(value) => {
+                    Some(mut value) => {
                         info!(slot = value.slot, "latest stored slot (db)");
                         if skip_catching_tip {
-                            let slot_info =
-                                source::rpc::get_confirmed_slot(rpc_endpoint.clone()).await?;
-                            db.store_slot_info(slot_info)?;
+                            value = source::rpc::get_confirmed_slot(rpc_endpoint.clone()).await?;
+                            db.store_slot_info(value)?;
                             warn!(
-                                slot = slot_info.slot,
-                                height = slot_info.height,
+                                slot = value.slot,
+                                height = value.height,
                                 "update stored slot (skip catching tip)"
                             );
                         }
@@ -207,6 +207,7 @@ fn try_main() -> anyhow::Result<()> {
                         shutdown.clone()
                     ),
                     blocks::start(
+                        storage_init_buffer_path,
                         db_ready_fut,
                         latest_stored_slot,
                         geyser_update_rx,

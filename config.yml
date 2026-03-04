@@ -1,6 +1,7 @@
 monitoring:
   logs_json: false
   otlp_endpoint:
+  prometheus_endpoint: 127.0.0.1:9001
 source:
   tokio:
     worker_threads: null # Number of threads in Tokio runtime, by default all available cores
@@ -36,9 +37,11 @@ storage:
     # type: endpoint
     # endpoint: http://127.0.0.1:8899
     # segments: 16
+  # init_buffer_path: /tmp/socotra_geyser_buffer.bin  # disk buffer during snapshot init
   blocks:
     updates_channel_size: 512
     request_channel_capacity: 131_072
+    read_workers: # default number of vCPU
 rpc:
   endpoint: 127.0.0.1:9000 # RPC endpoint, implement same JSON-RPC API as Agave
   tokio:

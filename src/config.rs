@@ -90,6 +90,8 @@ pub struct ConfigStorage {
     #[serde(default)]
     pub compression: ConfigStorageRocksdbCompression,
     pub init: ConfigStorageInit,
+    /// File path for disk-based message buffer during snapshot init
+    pub init_buffer_path: Option<PathBuf>,
     pub blocks: ConfigBlocks,
 }
 
