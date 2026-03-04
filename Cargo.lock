@@ -3866,6 +3866,7 @@ dependencies = [
  "humantime-serde",
  "hyper",
  "hyper-util",
+ "indicatif",
  "jsonrpsee-types",
  "maplit",
  "metrics",
