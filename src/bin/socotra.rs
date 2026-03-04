@@ -87,6 +87,7 @@ fn try_main() -> anyhow::Result<()> {
     let storage_blocks_config = config.storage.blocks;
     let storage_init_config = config.storage.init;
     let storage_init_buffer_path = config.storage.path.join("geyser_buffer.bin");
+    let db_path = config.storage.path.clone();
     let db = Rocksdb::open(config.storage.path, config.storage.compression)?;
     let (reader, reader_threads) = Reader::new(
         db.clone(),
@@ -132,7 +133,7 @@ fn try_main() -> anyhow::Result<()> {
                     }
                     None => match storage_init_config {
                         ConfigStorageInit::Snapshot { path } => {
-                            let slot = source::snapshot::read_snapshot_slot(&path).await?;
+                            let slot = source::snapshot::read_snapshot_slot(&path)?;
                             let height = source::rpc::get_block_height(&rpc_endpoint, slot).await?;
                             let mut value = SlotIndexValue { slot, height };
                             info!(slot, height, "latest stored slot (snapshot)");
@@ -152,6 +153,7 @@ fn try_main() -> anyhow::Result<()> {
                                 source::snapshot::load_snapshot_accounts(
                                     db.clone(),
                                     path,
+                                    db_path,
                                     shutdown,
                                 )
                                 .await

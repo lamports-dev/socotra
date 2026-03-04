@@ -268,7 +268,7 @@ pub async fn start(
     // Replay buffered messages
     let mut disk_reader = if disk_buffer.count > 0 {
         info!(
-            count = disk_buffer.count,
+            msg_count = disk_buffer.count,
             "replaying messages from disk buffer"
         );
         Some(disk_buffer.into_reader().await?)
@@ -293,6 +293,8 @@ pub async fn start(
         .context("failed to spawn store thread")?;
 
     // Process messages: replay from disk first, then switch to live channel
+    let replay_ts = Instant::now();
+    let replay_start_slot = latest_stored_slot.slot;
     while !shutdown.is_cancelled() {
         if disk_reader.is_some() || !messages.is_empty() {
             let ts = Instant::now();
@@ -301,7 +303,8 @@ pub async fn start(
                     match reader.next_message().await {
                         Some(result) => Some(result?),
                         None => {
-                            info!("disk buffer replay complete");
+                            let blocks_added = latest_stored_slot.slot - replay_start_slot;
+                            info!(blocks_added, elapsed = ?replay_ts.elapsed(), "disk buffer replay complete");
                             disk_reader = None;
                             messages.pop_front()
                         }

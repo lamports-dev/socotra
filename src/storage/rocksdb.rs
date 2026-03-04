@@ -87,10 +87,10 @@ impl AccountIndexKey {
     }
 }
 
-struct AccountIndexValue;
+pub struct AccountIndexValue;
 
 impl AccountIndexValue {
-    fn encode(account: &Account, buf: &mut Vec<u8>) {
+    pub fn encode(account: &Account, buf: &mut Vec<u8>) {
         encode_varint(account.lamports, buf);
         encode_varint(account.data.len() as u64, buf);
         buf.extend_from_slice(&account.data);
@@ -235,8 +235,8 @@ impl Rocksdb {
             .expect("should never get an unknown column")
     }
 
-    pub fn sst_config(&self, segment: u8) -> (PathBuf, Options) {
-        let path = self.path.join(format!("{segment:03}.sst"));
+    pub fn sst_config(&self, segment: u16) -> (PathBuf, Options) {
+        let path = self.path.join(format!("{segment:04}.sst"));
         // let options = Self::get_db_options();
         // Self::get_cf_options(Some(options), compression)
         let options = Self::get_cf_options(None, self.accounts_compression);
@@ -267,19 +267,25 @@ impl Rocksdb {
         Ok(())
     }
 
-    /// Write a batch of accounts directly, without updating slot info.
-    pub fn store_accounts(&self, accounts: &[(Pubkey, Account)]) -> anyhow::Result<()> {
-        let mut batch = WriteBatch::with_capacity_bytes(32 * 1024 * 1024); // 32MiB
-        let cf = self.cf_handle::<AccountIndexKey>();
-        let mut buf = Vec::with_capacity(16 * 1024 * 1024); // 16MiB
-        for (pubkey, account) in accounts {
-            buf.clear();
-            AccountIndexValue::encode(account, &mut buf);
-            batch.put_cf(cf, AccountIndexKey::encode(pubkey), &buf);
-        }
+    pub fn sst_ingest_files<P>(&self, files: Vec<P>) -> anyhow::Result<()>
+    where
+        P: AsRef<Path>,
+    {
+        let ts = Instant::now();
+        let mut ingest_options = IngestExternalFileOptions::default();
+        ingest_options.set_move_files(true);
+        ingest_options.set_snapshot_consistency(false);
+        ingest_options.set_allow_global_seqno(false);
+        ingest_options.set_allow_blocking_flush(false);
         self.db
-            .write(batch)
-            .context("failed to write accounts batch")
+            .ingest_external_file_cf_opts(
+                self.cf_handle::<AccountIndexKey>(),
+                &ingest_options,
+                files,
+            )
+            .context("failed to ingest SST files")?;
+        info!(elapsed = ?ts.elapsed(), "db created from sst files");
+        Ok(())
     }
 
     pub fn destroy(self) {

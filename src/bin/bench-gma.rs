@@ -1,12 +1,10 @@
 use {
     clap::Parser,
+    futures::future::join_all,
     indicatif::{ProgressBar, ProgressStyle},
     solana_account_decoder::UiAccountEncoding,
     solana_commitment_config::CommitmentConfig,
-    solana_rpc_client::{
-        api::config::RpcAccountInfoConfig, nonblocking::rpc_client::RpcClient,
-    },
-    futures::future::join_all,
+    solana_rpc_client::{api::config::RpcAccountInfoConfig, nonblocking::rpc_client::RpcClient},
     solana_sdk::pubkey::Pubkey,
     std::{
         path::PathBuf,

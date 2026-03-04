@@ -78,8 +78,9 @@ pub async fn fetch_confirmed_state(
     // segments=64 means first 6 bits: [0x00.., 0x04.., 0x08.., ..., 0xFC..]
     let shift = 8 - segments.trailing_zeros() as u8; // bits to shift within first byte
 
-    let (sst_files, sst_options): (Vec<PathBuf>, Vec<_>) =
-        (0..segments).map(|segment| db.sst_config(segment)).unzip();
+    let (sst_files, sst_options): (Vec<PathBuf>, Vec<_>) = (0..segments)
+        .map(|segment| db.sst_config(segment as u16))
+        .unzip();
 
     let ts = Instant::now();
     let mut handles: Vec<_> = sst_files
