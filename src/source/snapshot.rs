@@ -9,7 +9,10 @@ use {
         fs::{self, File},
         io::{BufWriter, Read, Seek, SeekFrom, Write},
         path::{Path, PathBuf},
-        sync::Arc,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::Instant,
     },
     tokio::{
@@ -25,6 +28,10 @@ const BUCKETS_PER_SHARD: usize = 256 / NUM_SHARDS; // 16
 
 type AccountBatch = Vec<(Pubkey, Vec<u8>)>;
 type BucketIndex = BTreeMap<Pubkey, (u64, u32)>;
+
+fn shard_path(db_path: &Path, shard_id: usize) -> PathBuf {
+    db_path.join(format!("snapshot_shard_{shard_id}.bin"))
+}
 
 pub fn read_snapshot_slot(snapshot_path: &Path) -> anyhow::Result<Slot> {
     let mut slot = 0;
@@ -65,7 +72,7 @@ pub async fn load_snapshot_accounts(
         let (tx, rx) = mpsc::channel::<AccountBatch>(accounts_read_concurrency);
         shard_txs.push(tx);
 
-        let shard_path = db_path.join(format!("snapshot_shard_{shard_id}.bin"));
+        let shard_path = shard_path(&db_path, shard_id);
         let handle = tokio::task::spawn_blocking(move || {
             let mut flat_file = BufWriter::with_capacity(
                 64 * 1024 * 1024,
@@ -160,7 +167,9 @@ pub async fn load_snapshot_accounts(
     );
 
     if shutdown.is_cancelled() {
-        cleanup_shard_files(&db_path);
+        for shard_id in 0..NUM_SHARDS {
+            let _ = fs::remove_file(shard_path(&db_path, shard_id));
+        }
         return Ok(());
     }
 
@@ -172,13 +181,30 @@ pub async fn load_snapshot_accounts(
     let mut sst_workers = JoinSet::new();
     let mut sst_files = Vec::with_capacity(num_sst);
 
+    let mut shard_remaining = vec![0usize; NUM_SHARDS];
+    for (bucket_id, bucket_map) in &all_buckets {
+        if !bucket_map.is_empty() {
+            shard_remaining[bucket_id / BUCKETS_PER_SHARD] += 1;
+        }
+    }
+    let shard_remaining: Vec<Arc<AtomicUsize>> = shard_remaining
+        .into_iter()
+        .map(|n| Arc::new(AtomicUsize::new(n)))
+        .collect();
+    // Delete shards that have zero non-empty buckets immediately
+    for (shard_id, counter) in shard_remaining.iter().enumerate() {
+        if counter.load(Ordering::Relaxed) == 0 {
+            let _ = fs::remove_file(shard_path(&db_path, shard_id));
+        }
+    }
+
     for (bucket_id, bucket_map) in all_buckets {
         if bucket_map.is_empty() {
             continue;
         }
 
         let shard_id = bucket_id / BUCKETS_PER_SHARD;
-        let shard_path = db_path.join(format!("snapshot_shard_{shard_id}.bin"));
+        let shard_path = shard_path(&db_path, shard_id);
         let (sst_path, options) = db.sst_config(bucket_id as u16);
         sst_files.push(sst_path.clone());
         let permit = Arc::clone(&semaphore)
@@ -186,6 +212,7 @@ pub async fn load_snapshot_accounts(
             .await
             .context("semaphore closed")?;
 
+        let remaining = Arc::clone(&shard_remaining[shard_id]);
         sst_workers.spawn_blocking(move || {
             let _permit = permit;
             let mut reader =
@@ -208,6 +235,9 @@ pub async fn load_snapshot_accounts(
             }
 
             sst.finish().context("failed to finish SST file")?;
+            if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+                let _ = fs::remove_file(&shard_path);
+            }
             anyhow::Ok(())
         });
     }
@@ -219,9 +249,6 @@ pub async fn load_snapshot_accounts(
 
     // Phase 3: Ingest
     db.sst_ingest_files(sst_files)?;
-
-    // Cleanup shard files
-    cleanup_shard_files(&db_path);
 
     Ok(())
 }
@@ -248,10 +275,4 @@ async fn dispatch_batch(
     }
 
     Ok(())
-}
-
-fn cleanup_shard_files(db_path: &Path) {
-    for shard_id in 0..NUM_SHARDS {
-        let _ = fs::remove_file(db_path.join(format!("snapshot_shard_{shard_id}.bin")));
-    }
 }
