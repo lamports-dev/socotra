@@ -12,7 +12,7 @@ use {
             Arc,
             atomic::{AtomicU64, Ordering},
         },
-        time::Duration,
+        time::{Duration, Instant},
     },
 };
 
@@ -42,6 +42,9 @@ struct Args {
 
     #[arg(long, default_value = "base64", value_parser = parse_encoding)]
     encoding: UiAccountEncoding,
+
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u16).range(1..=100))]
+    pubkeys_chunk_size: u16,
 }
 
 #[tokio::main]
@@ -74,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(args.concurrency));
 
     let mut handles = Vec::new();
-    for chunk in pubkeys.chunks(100) {
+    for chunk in pubkeys.chunks(args.pubkeys_chunk_size as usize) {
         let chunk = chunk.to_vec();
         let semaphore = Arc::clone(&semaphore);
         let client = Arc::clone(&client);
@@ -84,9 +87,11 @@ async fn main() -> anyhow::Result<()> {
 
         handles.push(tokio::spawn(async move {
             let _permit = semaphore.acquire().await.unwrap();
+            let start = Instant::now();
             let result = client
                 .get_multiple_ui_accounts_with_config(&chunk, config)
                 .await;
+            let latency = start.elapsed();
 
             if result.is_err() {
                 let count = errors.fetch_add(1, Ordering::Relaxed) + 1;
@@ -94,11 +99,36 @@ async fn main() -> anyhow::Result<()> {
             }
 
             pb.inc(chunk.len() as u64);
+            latency
         }));
     }
 
-    join_all(handles).await;
+    let mut latencies: Vec<Duration> = join_all(handles)
+        .await
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .collect();
     pb.finish();
+
+    latencies.sort_unstable();
+    if !latencies.is_empty() {
+        let n = latencies.len();
+        let idx = |p: f64| (p / 100.0 * (n - 1) as f64) as usize;
+        let percentiles = [50.0, 75.0, 90.0, 95.0, 99.0];
+        let indices: Vec<usize> = percentiles.iter().map(|&p| idx(p)).collect();
+
+        println!("\nLatency ({n} requests):");
+
+        // bucket boundaries: [0, p50], (p50, p75], ..., (p99, max]
+        let mut prev_idx = 0;
+        for (i, (&p, &pi)) in percentiles.iter().zip(&indices).enumerate() {
+            let count = if i == 0 { pi + 1 } else { pi - indices[i - 1] };
+            println!("  p{:<3} {:>8.2?}  ({count:>4} / {n})", p, latencies[pi],);
+            prev_idx = pi + 1;
+        }
+        let tail = n - prev_idx;
+        println!("  max  {:>8.2?}  ({tail:>4} / {n})", latencies[n - 1]);
+    }
 
     Ok(())
 }
