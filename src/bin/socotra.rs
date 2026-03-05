@@ -136,6 +136,7 @@ fn try_main() -> anyhow::Result<()> {
                             path,
                             accounts_read_concurrency,
                             sst_write_concurrency,
+                            num_shards,
                         } => {
                             let slot = source::snapshot::read_snapshot_slot(&path)?;
                             let height = source::rpc::get_block_height(&rpc_endpoint, slot).await?;
@@ -160,6 +161,7 @@ fn try_main() -> anyhow::Result<()> {
                                     db_path,
                                     accounts_read_concurrency,
                                     sst_write_concurrency,
+                                    num_shards,
                                     shutdown,
                                 )
                                 .await

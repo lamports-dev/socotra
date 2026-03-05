@@ -23,8 +23,7 @@ use {
     tracing::info,
 };
 
-const NUM_SHARDS: usize = 16;
-const BUCKETS_PER_SHARD: usize = 256 / NUM_SHARDS; // 16
+const NUM_BUCKETS: usize = 256;
 
 type AccountBatch = Vec<(Pubkey, Vec<u8>)>;
 type BucketIndex = BTreeMap<Pubkey, (u64, u32)>;
@@ -51,8 +50,14 @@ pub async fn load_snapshot_accounts(
     db_path: PathBuf,
     accounts_read_concurrency: usize,
     sst_write_concurrency: usize,
+    num_shards: usize,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        num_shards > 0 && num_shards <= NUM_BUCKETS && num_shards.is_power_of_two(),
+        "num_shards must be a power of 2, > 0 and <= {NUM_BUCKETS}, got {num_shards}"
+    );
+    let buckets_per_shard = NUM_BUCKETS / num_shards;
     // Discover account files
     let mut account_files = vec![];
     for entry in fs::read_dir(snapshot_path.join("accounts"))? {
@@ -65,10 +70,10 @@ pub async fn load_snapshot_accounts(
     // Phase 1: Parse account files → 16 shard flat files + 256 bucket indexes
     let ts = Instant::now();
     // Create 16 mpsc channels (one per shard)
-    let mut shard_txs = Vec::with_capacity(NUM_SHARDS);
-    let mut writer_handles = Vec::with_capacity(NUM_SHARDS);
+    let mut shard_txs = Vec::with_capacity(num_shards);
+    let mut writer_handles = Vec::with_capacity(num_shards);
 
-    for shard_id in 0..NUM_SHARDS {
+    for shard_id in 0..num_shards {
         let (tx, rx) = mpsc::channel::<AccountBatch>(accounts_read_concurrency);
         shard_txs.push(tx);
 
@@ -80,7 +85,7 @@ pub async fn load_snapshot_accounts(
                     .with_context(|| format!("failed to create shard file: {shard_path:?}"))?,
             );
             let mut buckets: Vec<BucketIndex> =
-                (0..BUCKETS_PER_SHARD).map(|_| BTreeMap::new()).collect();
+                (0..buckets_per_shard).map(|_| BTreeMap::new()).collect();
             let mut offset: u64 = 0;
             let mut rx = rx;
 
@@ -91,7 +96,7 @@ pub async fn load_snapshot_accounts(
                         .context("failed to write to shard file")?;
                     let size = encoded.len() as u32;
                     let bucket = pubkey.as_ref()[0] as usize;
-                    let bucket_local = bucket - shard_id * BUCKETS_PER_SHARD;
+                    let bucket_local = bucket - shard_id * buckets_per_shard;
                     buckets[bucket_local].insert(pubkey, (offset, size));
                     offset += size as u64;
                 }
@@ -141,11 +146,11 @@ pub async fn load_snapshot_accounts(
         if workers.len() > accounts_read_concurrency
             && let Some(result) = workers.join_next().await
         {
-            dispatch_batch(result??, &shard_txs).await?;
+            dispatch_batch(result??, &shard_txs, num_shards, buckets_per_shard).await?;
         }
     }
     while let Some(result) = workers.join_next().await {
-        dispatch_batch(result??, &shard_txs).await?;
+        dispatch_batch(result??, &shard_txs, num_shards, buckets_per_shard).await?;
     }
     drop(shard_txs);
 
@@ -154,7 +159,7 @@ pub async fn load_snapshot_accounts(
     for (shard_id, handle) in writer_handles.into_iter().enumerate() {
         let buckets = handle.await.context("shard writer panicked")??;
         for (local_idx, bucket_map) in buckets.into_iter().enumerate() {
-            let global_bucket = shard_id * BUCKETS_PER_SHARD + local_idx;
+            let global_bucket = shard_id * buckets_per_shard + local_idx;
             all_buckets.push((global_bucket, bucket_map));
         }
     }
@@ -167,7 +172,7 @@ pub async fn load_snapshot_accounts(
     );
 
     if shutdown.is_cancelled() {
-        for shard_id in 0..NUM_SHARDS {
+        for shard_id in 0..num_shards {
             let _ = fs::remove_file(shard_path(&db_path, shard_id));
         }
         return Ok(());
@@ -181,10 +186,10 @@ pub async fn load_snapshot_accounts(
     let mut sst_workers = JoinSet::new();
     let mut sst_files = Vec::with_capacity(num_sst);
 
-    let mut shard_remaining = vec![0usize; NUM_SHARDS];
+    let mut shard_remaining = vec![0usize; num_shards];
     for (bucket_id, bucket_map) in &all_buckets {
         if !bucket_map.is_empty() {
-            shard_remaining[bucket_id / BUCKETS_PER_SHARD] += 1;
+            shard_remaining[bucket_id / buckets_per_shard] += 1;
         }
     }
     let shard_remaining: Vec<Arc<AtomicUsize>> = shard_remaining
@@ -203,7 +208,7 @@ pub async fn load_snapshot_accounts(
             continue;
         }
 
-        let shard_id = bucket_id / BUCKETS_PER_SHARD;
+        let shard_id = bucket_id / buckets_per_shard;
         let shard_path = shard_path(&db_path, shard_id);
         let (sst_path, options) = db.sst_config(bucket_id as u16);
         sst_files.push(sst_path.clone());
@@ -257,11 +262,13 @@ pub async fn load_snapshot_accounts(
 async fn dispatch_batch(
     batch: AccountBatch,
     shard_txs: &[mpsc::Sender<AccountBatch>],
+    num_shards: usize,
+    buckets_per_shard: usize,
 ) -> anyhow::Result<()> {
-    let mut per_shard: Vec<AccountBatch> = (0..NUM_SHARDS).map(|_| Vec::new()).collect();
+    let mut per_shard: Vec<AccountBatch> = (0..num_shards).map(|_| Vec::new()).collect();
 
     for (pubkey, encoded) in batch {
-        let shard = pubkey.as_ref()[0] as usize / BUCKETS_PER_SHARD;
+        let shard = pubkey.as_ref()[0] as usize / buckets_per_shard;
         per_shard[shard].push((pubkey, encoded));
     }
 

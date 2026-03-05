@@ -1,48 +1,49 @@
 monitoring:
-  logs_json: false
-  otlp_endpoint:
-  prometheus_endpoint: 127.0.0.1:9001
+  logs_json: false # Output logs in JSON format
+  otlp_endpoint: # OpenTelemetry collector endpoint, optional
+  prometheus_endpoint: 127.0.0.1:9001 # Prometheus metrics endpoint
 source:
   tokio:
     worker_threads: null # Number of threads in Tokio runtime, by default all available cores
     affinity: null # Pin threads to specific CPUs, optional (taskset syntax)
-  rpc: http://127.0.0.1:8899
+  rpc: http://127.0.0.1:8899 # Solana RPC endpoint for slot/block height queries
   # reconnect:
-  #   backoff_init: 100ms
-  #   backoff_max: 1s
-  endpoint: http://127.0.0.1:10000
-  ca_certificate: null
-  connect_timeout: null
-  buffer_size: null
-  http2_adaptive_window: null
-  http2_keep_alive_interval: null
-  initial_connection_window_size: null
-  initial_stream_window_size: null
-  keep_alive_timeout: null
-  keep_alive_while_idle: false
-  tcp_keepalive: 15s
-  tcp_nodelay: true
-  timeout: null
+  #   backoff_init: 100ms # Initial reconnect backoff delay
+  #   backoff_max: 1s # Maximum reconnect backoff delay
+  endpoint: http://127.0.0.1:10000 # Richat gRPC endpoint for account/block updates
+  ca_certificate: null # TLS CA certificate path, optional
+  connect_timeout: null # gRPC connection timeout, optional
+  buffer_size: null # gRPC read buffer size, optional
+  http2_adaptive_window: null # Enable HTTP/2 adaptive flow control, optional
+  http2_keep_alive_interval: null # HTTP/2 keep-alive ping interval, optional
+  initial_connection_window_size: null # HTTP/2 connection-level flow control window, optional
+  initial_stream_window_size: null # HTTP/2 stream-level flow control window, optional
+  keep_alive_timeout: null # Keep-alive ping timeout, optional
+  keep_alive_while_idle: false # Send keep-alive pings even when no active streams
+  tcp_keepalive: 15s # TCP keep-alive interval
+  tcp_nodelay: true # Disable Nagle's algorithm for lower latency
+  timeout: null # Overall request timeout, optional
   max_decoding_message_size: 4_194_304 # 4MiB, better set to 16MiB (because account messages can be more than 10MiB)
   compression: # Optional compression, not recommended due to high traffic volume
     accept: [] # valid: gzip, zstd
     send: [] # valid: gzip, zstd
-  x_token: null
+  x_token: null # Authentication token for gRPC connection, optional
 storage:
-  path: ./db
-  compression: none # none, snappy, zlib, bz2, lz4, lz4hc, zstd
+  path: ./db # Path to RocksDB database directory
+  compression: none # RocksDB compression algorithm: none, snappy, zlib, bz2, lz4, lz4hc, zstd
   init:
     type: snapshot
-    path: /path/file/snapshot.tar.zst
-    accounts_read_concurrency: 64
-    sst_write_concurrency: 32
+    path: /path/file/unpacked-snapshot # Path to unpacked snapshot directory
+    accounts_read_concurrency: 64 # Number of concurrent account file readers
+    sst_write_concurrency: 32 # Number of concurrent SST file writers
+    num_shards: 16 # Number of intermediate shard files (must be power of 2, 1..=256)
     # type: endpoint
-    # endpoint: http://127.0.0.1:8899
-    # segments: 16
+    # endpoint: http://127.0.0.1:8899 # RPC endpoint to fetch accounts from
+    # segments: 16 # Number of parallel getAccountInfo segments
   blocks:
-    updates_channel_size: 512
-    request_channel_capacity: 131_072
-    read_workers: # default number of vCPU
+    updates_channel_size: 512 # Channel size for incoming block/account updates
+    request_channel_capacity: 131_072 # Max number of queued read requests
+    read_workers: # Number of RocksDB read workers, default: number of vCPUs
 rpc:
   endpoint: 127.0.0.1:9000 # RPC endpoint, implement same JSON-RPC API as Agave
   tokio:
@@ -53,4 +54,4 @@ rpc:
     # access-control-allow-origin: "*"
     # access-control-max-age: 86400
     # access-control-allow-methods: OPTIONS, POST
-  request_timeout: 60s
+  request_timeout: 60s # Max time to process a single JSON-RPC request

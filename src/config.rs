@@ -129,6 +129,8 @@ pub enum ConfigStorageInit {
         accounts_read_concurrency: usize,
         #[serde(default = "ConfigStorageInit::default_sst_write_concurrency")]
         sst_write_concurrency: usize,
+        #[serde(default = "ConfigStorageInit::default_num_shards")]
+        num_shards: usize,
     },
     Endpoint {
         endpoint: String,
@@ -148,6 +150,10 @@ impl ConfigStorageInit {
 
     const fn default_sst_write_concurrency() -> usize {
         32
+    }
+
+    const fn default_num_shards() -> usize {
+        16
     }
 }
 
