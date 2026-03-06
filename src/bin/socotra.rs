@@ -40,7 +40,7 @@ struct Args {
     #[clap(long)]
     pub check: bool,
 
-    /// Debug: fetch current slot from RPC and store it, skipping catching tip
+    /// Debug: fetch current slot from RPC and store it, skip catching up to the tip
     #[clap(long)]
     pub skip_catching_tip: bool,
 }
@@ -65,7 +65,7 @@ fn try_main() -> anyhow::Result<()> {
     let config: Config = richat_shared::config::load_from_file_sync(&args.config)
         .with_context(|| format!("failed to load config from {}", args.config))?;
 
-    // Setup monitoring
+    // Set up monitoring
     let otel_state = setup_tracing(
         config.monitoring.logs_json,
         config.monitoring.otlp_endpoint.as_deref(),
@@ -78,7 +78,7 @@ fn try_main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Shutdown
+    // Thread handles & shutdown token
     let mut threads =
         Vec::<(String, Option<thread::JoinHandle<anyhow::Result<()>>>)>::with_capacity(2);
     let shutdown = CancellationToken::new();

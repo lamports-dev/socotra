@@ -67,9 +67,9 @@ pub async fn load_snapshot_accounts(
     }
     info!(count = account_files.len(), "discovered account files");
 
-    // Phase 1: Parse account files → 16 shard flat files + 256 bucket indexes
+    // Phase 1: Parse account files → shard flat files + bucket indexes
     let ts = Instant::now();
-    // Create 16 mpsc channels (one per shard)
+    // Create mpsc channels (one per shard)
     let mut shard_txs = Vec::with_capacity(num_shards);
     let mut writer_handles = Vec::with_capacity(num_shards);
 
@@ -154,7 +154,7 @@ pub async fn load_snapshot_accounts(
     }
     drop(shard_txs);
 
-    // Collect results from all 16 writer tasks → 256 BTreeMaps total
+    // Collect results from all writer tasks → NUM_BUCKETS BTreeMaps total
     let mut all_buckets: Vec<(usize, BucketIndex)> = Vec::with_capacity(256);
     for (shard_id, handle) in writer_handles.into_iter().enumerate() {
         let buckets = handle.await.context("shard writer panicked")??;
