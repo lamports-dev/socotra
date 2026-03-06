@@ -8,7 +8,9 @@ use {
     richat_shared::mutex_lock,
     solana_account_decoder::parse_account_data::AccountAdditionalDataV3,
     solana_commitment_config::CommitmentLevel,
+    solana_rpc_client::api::config::RpcSimulateTransactionAccountsConfig,
     solana_sdk::{account::Account, clock::Slot, hash::Hash, pubkey::Pubkey},
+    solana_transaction::versioned::VersionedTransaction,
     std::{
         fmt,
         sync::{Arc, Mutex, mpsc},
@@ -22,6 +24,14 @@ use {
 
 #[derive(Debug)]
 enum ReadRequest {
+    Slot {
+        parent: Span,
+        deadline: Instant,
+        x_subscription_id: Arc<str>,
+        commitment: CommitmentLevel,
+        min_context_slot: Option<Slot>,
+        tx: oneshot::Sender<ReadResultSlot>,
+    },
     Account {
         parent: Span,
         deadline: Instant,
@@ -32,14 +42,41 @@ enum ReadRequest {
         json_parsed: bool,
         tx: oneshot::Sender<ReadResultAccount>,
     },
-    Slot {
+    SimulateTransaction {
         parent: Span,
         deadline: Instant,
         x_subscription_id: Arc<str>,
+        unsanitized_tx: VersionedTransaction,
+        sig_verify: bool,
+        replace_recent_blockhash: bool,
+        config_accounts: Option<RpcSimulateTransactionAccountsConfig>,
+        enable_cpi_recording: bool,
         commitment: CommitmentLevel,
         min_context_slot: Option<Slot>,
-        tx: oneshot::Sender<ReadResultSlot>,
+        tx: oneshot::Sender<ReadResultSimulateTransaction>,
     },
+}
+
+pub enum ReadResultSlot {
+    ReqChanClosed,
+    ReqChanFull,
+    ReqDrop,
+    Timeout,
+    MinContextSlotNotReached { context_slot: Slot },
+    Slot(Slot),
+}
+
+impl fmt::Debug for ReadResultSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReqChanClosed => write!(f, "ReqChanClosed"),
+            Self::ReqChanFull => write!(f, "ReqChanFull"),
+            Self::ReqDrop => write!(f, "ReqDrop"),
+            Self::Timeout => write!(f, "Timeout"),
+            Self::MinContextSlotNotReached { .. } => write!(f, "MinContextSlotNotReached"),
+            Self::Slot(_) => write!(f, "Slot"),
+        }
+    }
 }
 
 pub enum ReadResultAccount {
@@ -85,16 +122,15 @@ impl From<GetAccountsError> for ReadResultAccount {
     }
 }
 
-pub enum ReadResultSlot {
+pub enum ReadResultSimulateTransaction {
     ReqChanClosed,
     ReqChanFull,
     ReqDrop,
     Timeout,
     MinContextSlotNotReached { context_slot: Slot },
-    Slot(Slot),
 }
 
-impl fmt::Debug for ReadResultSlot {
+impl fmt::Debug for ReadResultSimulateTransaction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ReqChanClosed => write!(f, "ReqChanClosed"),
@@ -102,7 +138,6 @@ impl fmt::Debug for ReadResultSlot {
             Self::ReqDrop => write!(f, "ReqDrop"),
             Self::Timeout => write!(f, "Timeout"),
             Self::MinContextSlotNotReached { .. } => write!(f, "MinContextSlotNotReached"),
-            Self::Slot(_) => write!(f, "Slot"),
         }
     }
 }
@@ -201,98 +236,6 @@ impl Reader {
                 match (&state, request) {
                     (
                         Some(state),
-                        ReadRequest::Account {
-                            parent,
-                            deadline,
-                            x_subscription_id,
-                            pubkeys,
-                            commitment,
-                            min_context_slot,
-                            json_parsed,
-                            tx,
-                        },
-                    ) => {
-                        let _guard = info_span!(parent: parent, "read_worker").entered();
-                        let _ = tx.send(if deadline < started_at {
-                            ReadResultAccount::Timeout
-                        } else {
-                            counter!(
-                                READ_REQUESTS_TOTAL,
-                                "x_subscription_id" => Arc::clone(&x_subscription_id),
-                                "type" => "account"
-                            )
-                            .increment(pubkeys.len() as u64);
-
-                            let slot = match commitment {
-                                CommitmentLevel::Processed => state.processed_slot,
-                                CommitmentLevel::Confirmed => state.confirmed_slot,
-                                CommitmentLevel::Finalized => state.finalized_slot,
-                            };
-
-                            if let Some(min_context_slot) = min_context_slot
-                                && slot < min_context_slot
-                            {
-                                ReadResultAccount::MinContextSlotNotReached { context_slot: slot }
-                            } else {
-                                let mut accounts: Vec<Option<Arc<Account>>> =
-                                    vec![None; pubkeys.len()];
-                                let mut mints = HashMap::default();
-
-                                let read_started_at = Instant::now();
-                                let result = match db.get_accounts(
-                                    &pubkeys,
-                                    &mut accounts,
-                                    json_parsed,
-                                    &mut mints,
-                                    |pubkey| {
-                                        if commitment == CommitmentLevel::Processed
-                                            && let Some(account) = state.processed_map.get(pubkey)
-                                        {
-                                            return Some(Arc::clone(account));
-                                        }
-                                        if matches!(
-                                            commitment,
-                                            CommitmentLevel::Processed | CommitmentLevel::Confirmed
-                                        ) && let Some(account) = state.confirmed_map.get(pubkey)
-                                        {
-                                            return Some(Arc::clone(account));
-                                        }
-                                        None
-                                    },
-                                ) {
-                                    Ok((db_slot, bytes_read)) => {
-                                        counter!(
-                                            READ_ACCOUNTS_BYTES_TOTAL,
-                                            "x_subscription_id" => Arc::clone(&x_subscription_id),
-                                        )
-                                        .increment(bytes_read);
-
-                                        ReadResultAccount::Accounts {
-                                            slot: if commitment == CommitmentLevel::Finalized {
-                                                db_slot
-                                            } else {
-                                                slot
-                                            },
-                                            pubkeys,
-                                            accounts,
-                                            mints,
-                                        }
-                                    }
-                                    Err(error) => error.into(),
-                                };
-
-                                gauge!(
-                                    READ_ACCOUNTS_SECONDS_TOTAL,
-                                    "x_subscription_id" => x_subscription_id,
-                                )
-                                .increment(read_started_at.elapsed().as_secs_f64());
-
-                                result
-                            }
-                        });
-                    }
-                    (
-                        Some(state),
                         ReadRequest::Slot {
                             parent,
                             deadline,
@@ -328,6 +271,104 @@ impl Reader {
                             }
                         });
                     }
+                    (
+                        Some(state),
+                        ReadRequest::Account {
+                            parent,
+                            deadline,
+                            x_subscription_id,
+                            pubkeys,
+                            commitment,
+                            min_context_slot,
+                            json_parsed,
+                            tx,
+                        },
+                    ) => {
+                        let _guard = info_span!(parent: parent, "read_worker").entered();
+                        let _ = tx.send(if deadline < started_at {
+                            ReadResultAccount::Timeout
+                        } else {
+                            counter!(
+                                READ_REQUESTS_TOTAL,
+                                "x_subscription_id" => Arc::clone(&x_subscription_id),
+                                "type" => "account"
+                            )
+                            .increment(pubkeys.len() as u64);
+
+                            let slot = match commitment {
+                                CommitmentLevel::Processed => state.processed_slot,
+                                CommitmentLevel::Confirmed => state.confirmed_slot,
+                                CommitmentLevel::Finalized => state.finalized_slot,
+                            };
+
+                            if let Some(min_context_slot) = min_context_slot
+                                && slot < min_context_slot
+                            {
+                                ReadResultAccount::MinContextSlotNotReached { context_slot: slot }
+                            } else {
+                                let read_started_at = Instant::now();
+                                let result = Self::read_accounts(
+                                    &db,
+                                    state,
+                                    pubkeys,
+                                    commitment,
+                                    slot,
+                                    json_parsed,
+                                    Arc::clone(&x_subscription_id),
+                                );
+                                gauge!(
+                                    READ_ACCOUNTS_SECONDS_TOTAL,
+                                    "x_subscription_id" => x_subscription_id,
+                                )
+                                .increment(read_started_at.elapsed().as_secs_f64());
+                                result
+                            }
+                        });
+                    }
+                    (
+                        Some(state),
+                        ReadRequest::SimulateTransaction {
+                            parent,
+                            deadline,
+                            x_subscription_id,
+                            unsanitized_tx,
+                            sig_verify,
+                            replace_recent_blockhash,
+                            config_accounts,
+                            enable_cpi_recording,
+                            commitment,
+                            min_context_slot,
+                            tx,
+                        },
+                    ) => {
+                        let _guard = info_span!(parent: parent, "read_worker").entered();
+                        let _ = tx.send(if deadline < started_at {
+                            ReadResultSimulateTransaction::Timeout
+                        } else {
+                            counter!(
+                                READ_REQUESTS_TOTAL,
+                                "x_subscription_id" => Arc::clone(&x_subscription_id),
+                                "type" => "simulateTransaction"
+                            )
+                            .increment(1);
+
+                            let slot = match commitment {
+                                CommitmentLevel::Processed => state.processed_slot,
+                                CommitmentLevel::Confirmed => state.confirmed_slot,
+                                CommitmentLevel::Finalized => state.finalized_slot,
+                            };
+
+                            if let Some(min_context_slot) = min_context_slot
+                                && slot < min_context_slot
+                            {
+                                ReadResultSimulateTransaction::MinContextSlotNotReached {
+                                    context_slot: slot,
+                                }
+                            } else {
+                                todo!()
+                            }
+                        });
+                    }
                     (None, _) => {}
                 }
 
@@ -342,9 +383,84 @@ impl Reader {
         }
     }
 
+    fn read_accounts(
+        db: &Rocksdb,
+        state: &ReaderState,
+        pubkeys: Vec<Pubkey>,
+        commitment: CommitmentLevel,
+        slot: Slot,
+        json_parsed: bool,
+        x_subscription_id: Arc<str>,
+    ) -> ReadResultAccount {
+        let mut accounts: Vec<Option<Arc<Account>>> = vec![None; pubkeys.len()];
+        let mut mints = HashMap::default();
+
+        match db.get_accounts(&pubkeys, &mut accounts, json_parsed, &mut mints, |pubkey| {
+            if commitment == CommitmentLevel::Processed
+                && let Some(account) = state.processed_map.get(pubkey)
+            {
+                return Some(Arc::clone(account));
+            }
+            if matches!(
+                commitment,
+                CommitmentLevel::Processed | CommitmentLevel::Confirmed
+            ) && let Some(account) = state.confirmed_map.get(pubkey)
+            {
+                return Some(Arc::clone(account));
+            }
+            None
+        }) {
+            Ok((db_slot, bytes_read)) => {
+                counter!(
+                    READ_ACCOUNTS_BYTES_TOTAL,
+                    "x_subscription_id" => x_subscription_id,
+                )
+                .increment(bytes_read);
+
+                ReadResultAccount::Accounts {
+                    slot: if commitment == CommitmentLevel::Finalized {
+                        db_slot
+                    } else {
+                        slot
+                    },
+                    pubkeys,
+                    accounts,
+                    mints,
+                }
+            }
+            Err(error) => error.into(),
+        }
+    }
+
     pub fn update(&self, update: Arc<ReaderState>) -> anyhow::Result<()> {
         self.update_tx.send(update)?;
         Ok(())
+    }
+
+    pub async fn get_slot(
+        &self,
+        x_subscription_id: Arc<str>,
+        commitment: CommitmentLevel,
+        min_context_slot: Option<Slot>,
+    ) -> ReadResultSlot {
+        let (tx, rx) = oneshot::channel();
+        match self.req_tx.try_send(ReadRequest::Slot {
+            parent: Span::current(),
+            deadline: Instant::now() + self.read_timeout,
+            x_subscription_id,
+            commitment,
+            min_context_slot,
+            tx,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Disconnected(_)) => return ReadResultSlot::ReqChanClosed,
+            Err(mpsc::TrySendError::Full(_)) => return ReadResultSlot::ReqChanFull,
+        };
+
+        match rx.await {
+            Ok(value) => value,
+            Err(_) => ReadResultSlot::ReqDrop,
+        }
     }
 
     pub async fn get_accounts(
@@ -377,29 +493,42 @@ impl Reader {
         }
     }
 
-    pub async fn get_slot(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn simulate_transaction(
         &self,
         x_subscription_id: Arc<str>,
+        unsanitized_tx: VersionedTransaction,
+        sig_verify: bool,
+        replace_recent_blockhash: bool,
+        config_accounts: Option<RpcSimulateTransactionAccountsConfig>,
+        enable_cpi_recording: bool,
         commitment: CommitmentLevel,
         min_context_slot: Option<Slot>,
-    ) -> ReadResultSlot {
+    ) -> ReadResultSimulateTransaction {
         let (tx, rx) = oneshot::channel();
-        match self.req_tx.try_send(ReadRequest::Slot {
+        match self.req_tx.try_send(ReadRequest::SimulateTransaction {
             parent: Span::current(),
             deadline: Instant::now() + self.read_timeout,
             x_subscription_id,
+            unsanitized_tx,
+            sig_verify,
+            replace_recent_blockhash,
+            config_accounts,
+            enable_cpi_recording,
             commitment,
             min_context_slot,
             tx,
         }) {
             Ok(()) => {}
-            Err(mpsc::TrySendError::Disconnected(_)) => return ReadResultSlot::ReqChanClosed,
-            Err(mpsc::TrySendError::Full(_)) => return ReadResultSlot::ReqChanFull,
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                return ReadResultSimulateTransaction::ReqChanClosed;
+            }
+            Err(mpsc::TrySendError::Full(_)) => return ReadResultSimulateTransaction::ReqChanFull,
         };
 
         match rx.await {
             Ok(value) => value,
-            Err(_) => ReadResultSlot::ReqDrop,
+            Err(_) => ReadResultSimulateTransaction::ReqDrop,
         }
     }
 }

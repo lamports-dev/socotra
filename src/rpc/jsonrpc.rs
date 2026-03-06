@@ -1,9 +1,13 @@
 use {
     crate::{
         config::ConfigRpc,
-        storage::reader::{ReadResultAccount, ReadResultSlot, Reader},
+        storage::reader::{
+            ReadResultAccount, ReadResultSimulateTransaction, ReadResultSlot, Reader,
+        },
     },
     ahash::HashMap,
+    base64::Engine,
+    bincode::Options,
     futures::future::BoxFuture,
     jsonrpsee_types::{
         Extensions, Id, Params, Request, Response, ResponsePayload, TwoPointZero,
@@ -23,13 +27,19 @@ use {
         parse_token::{get_token_account_mint, is_known_spl_token_id},
     },
     solana_commitment_config::CommitmentLevel,
+    solana_perf::packet::PACKET_DATA_SIZE,
     solana_rpc_client::api::{
-        config::{RpcAccountInfoConfig, RpcContextConfig},
+        config::{
+            RpcAccountInfoConfig, RpcContextConfig, RpcSimulateTransactionAccountsConfig,
+            RpcSimulateTransactionConfig,
+        },
         custom_error::RpcCustomError,
         response::{Response as RpcResponse, RpcResponseContext, RpcVersionInfo},
     },
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
-    std::sync::Arc,
+    solana_transaction::versioned::VersionedTransaction,
+    solana_transaction_status_client_types::{TransactionBinaryEncoding, UiTransactionEncoding},
+    std::{any::type_name, sync::Arc},
     tracing::{Instrument, info_span},
 };
 
@@ -54,6 +64,10 @@ pub fn create_request_processor(
     processor.add_handler(
         "getMultipleAccounts",
         Box::new(RpcRequestMultipleAccounts::handle),
+    );
+    processor.add_handler(
+        "simulateTransaction",
+        Box::new(RpcRequestSimulateTransaction::handle),
     );
 
     processor
@@ -493,4 +507,187 @@ fn encode_account(
             pubkey, account, encoding, None, data_slice,
         ))
     }
+}
+
+#[derive(Debug)]
+struct RpcRequestSimulateTransaction {
+    state: Arc<State>,
+    x_subscription_id: Arc<str>,
+    id: Id<'static>,
+    unsanitized_tx: VersionedTransaction,
+    sig_verify: bool,
+    replace_recent_blockhash: bool,
+    config_accounts: Option<RpcSimulateTransactionAccountsConfig>,
+    enable_cpi_recording: bool,
+    commitment: CommitmentLevel,
+    min_context_slot: Option<Slot>,
+}
+
+impl RpcRequestHandler for RpcRequestSimulateTransaction {
+    fn parse(
+        state: Arc<State>,
+        x_subscription_id: Arc<str>,
+        _upstream_disabled: bool,
+        request: Request<'_>,
+    ) -> Result<Self, Vec<u8>> {
+        #[derive(Debug, Default, Deserialize)]
+        struct ReqParams {
+            data: String,
+            #[serde(default)]
+            config: Option<RpcSimulateTransactionConfig>,
+        }
+
+        let (id, ReqParams { data, config }) = if request.params.is_some() {
+            parse_params(request)?
+        } else {
+            (request.id, Default::default())
+        };
+        let RpcSimulateTransactionConfig {
+            sig_verify,
+            replace_recent_blockhash,
+            commitment,
+            encoding,
+            accounts: config_accounts,
+            min_context_slot,
+            inner_instructions: enable_cpi_recording,
+        } = config.unwrap_or_default();
+        let tx_encoding = encoding.unwrap_or(UiTransactionEncoding::Base58);
+        let Some(binary_encoding) = tx_encoding.into_binary_encoding() else {
+            return Err(jsonrpc_response_error(
+                id,
+                jsonrpc_error_invalid_params::<()>(
+                    format!(
+                        "unsupported encoding: {tx_encoding}. Supported encodings: base58, base64"
+                    ),
+                    None,
+                ),
+            ));
+        };
+        let (_, unsanitized_tx) =
+            match decode_and_deserialize::<VersionedTransaction>(data, binary_encoding) {
+                Ok(result) => result,
+                Err(error) => return Err(jsonrpc_response_error(id, error)),
+            };
+
+        Ok(Self {
+            state,
+            x_subscription_id,
+            id: id.into_owned(),
+            unsanitized_tx,
+            sig_verify,
+            replace_recent_blockhash,
+            config_accounts,
+            enable_cpi_recording,
+            commitment: commitment.unwrap_or_default().commitment,
+            min_context_slot,
+        })
+    }
+
+    async fn process(self) -> RpcRequestResult {
+        match self
+            .state
+            .reader
+            .simulate_transaction(
+                self.x_subscription_id,
+                self.unsanitized_tx,
+                self.sig_verify,
+                self.replace_recent_blockhash,
+                self.config_accounts,
+                self.enable_cpi_recording,
+                self.commitment,
+                self.min_context_slot,
+            )
+            .await
+        {
+            ReadResultSimulateTransaction::ReqChanClosed => {
+                anyhow::bail!("reader workers terminated")
+            }
+            ReadResultSimulateTransaction::ReqChanFull => anyhow::bail!("request queue is full"),
+            ReadResultSimulateTransaction::ReqDrop => anyhow::bail!("request dropped by reader"),
+            ReadResultSimulateTransaction::Timeout => anyhow::bail!("request timeout"),
+            ReadResultSimulateTransaction::MinContextSlotNotReached { context_slot } => {
+                Ok(jsonrpc_response_error_custom(
+                    self.id,
+                    RpcCustomError::MinContextSlotNotReached { context_slot },
+                ))
+            }
+        }
+    }
+}
+
+const _: () = assert!(PACKET_DATA_SIZE == 1232);
+// https://github.com/anza-xyz/agave/blob/v3.1.9/rpc/src/rpc.rs#L4343
+const MAX_BASE58_SIZE: usize = 1683; // Golden, bump if PACKET_DATA_SIZE changes
+const MAX_BASE64_SIZE: usize = 1644; // Golden, bump if PACKET_DATA_SIZE changes
+fn decode_and_deserialize<T>(
+    encoded: String,
+    encoding: TransactionBinaryEncoding,
+) -> Result<(Vec<u8>, T), ErrorObjectOwned>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let wire_output = match encoding {
+        TransactionBinaryEncoding::Base58 => {
+            if encoded.len() > MAX_BASE58_SIZE {
+                return Err(jsonrpc_error_invalid_params::<()>(
+                    format!(
+                        "base58 encoded {} too large: {} bytes (max: encoded/raw {}/{})",
+                        type_name::<T>(),
+                        encoded.len(),
+                        MAX_BASE58_SIZE,
+                        PACKET_DATA_SIZE,
+                    ),
+                    None,
+                ));
+            }
+            bs58::decode(encoded).into_vec().map_err(|e| {
+                jsonrpc_error_invalid_params::<()>(format!("invalid base58 encoding: {e:?}"), None)
+            })?
+        }
+        TransactionBinaryEncoding::Base64 => {
+            if encoded.len() > MAX_BASE64_SIZE {
+                return Err(jsonrpc_error_invalid_params::<()>(
+                    format!(
+                        "base64 encoded {} too large: {} bytes (max: encoded/raw {}/{})",
+                        type_name::<T>(),
+                        encoded.len(),
+                        MAX_BASE64_SIZE,
+                        PACKET_DATA_SIZE,
+                    ),
+                    None,
+                ));
+            }
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .map_err(|e| {
+                    jsonrpc_error_invalid_params::<()>(
+                        format!("invalid base64 encoding: {e:?}"),
+                        None,
+                    )
+                })?
+        }
+    };
+    if wire_output.len() > PACKET_DATA_SIZE {
+        return Err(jsonrpc_error_invalid_params::<()>(
+            format!(
+                "decoded {} too large: {} bytes (max: {} bytes)",
+                type_name::<T>(),
+                wire_output.len(),
+                PACKET_DATA_SIZE,
+            ),
+            None,
+        ));
+    }
+    bincode::options()
+        .with_limit(PACKET_DATA_SIZE as u64)
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .deserialize_from(&wire_output[..])
+        .map_err(|err| {
+            jsonrpc_error_invalid_params::<()>(
+                format!("failed to deserialize {}: {}", type_name::<T>(), err),
+                None,
+            )
+        })
+        .map(|output| (wire_output, output))
 }
