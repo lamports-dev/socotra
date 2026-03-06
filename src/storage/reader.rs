@@ -8,7 +8,7 @@ use {
     richat_shared::mutex_lock,
     solana_account_decoder::parse_account_data::AccountAdditionalDataV3,
     solana_commitment_config::CommitmentLevel,
-    solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
+    solana_sdk::{account::Account, clock::Slot, hash::Hash, pubkey::Pubkey},
     std::{
         fmt,
         sync::{Arc, Mutex, mpsc},
@@ -110,10 +110,12 @@ impl fmt::Debug for ReadResultSlot {
 #[derive(Debug, Default)]
 pub struct ReaderState {
     pub processed_slot: Slot,
+    pub processed_height: Slot,
     pub processed_map: HashMap<Pubkey, Arc<Account>>,
     pub confirmed_slot: Slot,
     pub confirmed_map: HashMap<Pubkey, Arc<Account>>,
     pub finalized_slot: Slot,
+    pub blockhash_map: HashMap<Hash, Slot>,
 }
 
 #[derive(Debug, Clone)]

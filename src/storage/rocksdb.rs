@@ -14,7 +14,8 @@ use {
     },
     solana_sdk::{
         account::Account,
-        clock::{Slot, UnixTimestamp},
+        clock::{MAX_PROCESSING_AGE, Slot, UnixTimestamp},
+        hash::Hash,
         pubkey::Pubkey,
     },
     spl_token_2022_interface::{
@@ -25,6 +26,7 @@ use {
         state::Mint,
     },
     std::{
+        collections::BTreeMap,
         path::{Path, PathBuf},
         sync::Arc,
         time::Instant,
@@ -135,6 +137,13 @@ impl AccountIndexValue {
     }
 }
 
+#[derive(Debug)]
+pub struct BlockhashIndexKey;
+
+impl ColumnName for BlockhashIndexKey {
+    const NAME: &'static str = "blockhash_index";
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum GetAccountsError {
     #[error("rocksdb: {0}")]
@@ -201,6 +210,7 @@ impl Rocksdb {
         vec![
             Self::cf_descriptor::<SlotIndexKey>(DBCompressionType::None),
             Self::cf_descriptor::<AccountIndexKey>(compression),
+            Self::cf_descriptor::<BlockhashIndexKey>(DBCompressionType::None),
         ]
     }
 
@@ -309,11 +319,32 @@ impl Rocksdb {
             .transpose()
     }
 
+    pub fn load_blockhashes(&self) -> anyhow::Result<BTreeMap<Slot, Hash>> {
+        let cf = self.cf_handle::<BlockhashIndexKey>();
+        let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        let mut map = BTreeMap::new();
+        for item in iter {
+            let (key, value) = item.context("failed to iterate blockhash_index")?;
+            let height = Slot::from_be_bytes(
+                key.as_ref()
+                    .try_into()
+                    .context("invalid blockhash_index key length")?,
+            );
+            let bytes: [u8; 32] = value
+                .as_ref()
+                .try_into()
+                .context("invalid blockhash_index value length")?;
+            map.insert(height, Hash::new_from_array(bytes));
+        }
+        Ok(map)
+    }
+
     #[instrument(skip_all, fields(slot = state_slot_info.slot, accounts))]
     pub fn store_new_state(
         &self,
         state_slot_info: SlotIndexValue,
         accounts: impl Iterator<Item = (Pubkey, Arc<Account>)>,
+        blockhash: Hash,
     ) -> anyhow::Result<()> {
         let span = info_span!("generate_batch").entered();
         let mut batch = WriteBatch::with_capacity_bytes(256 * 1024 * 1024); // 256MiB
@@ -324,16 +355,30 @@ impl Rocksdb {
             state_slot_info.encode(),
         );
 
+        // Store blockhash for this finalized height
+        let bh_cf = self.cf_handle::<BlockhashIndexKey>();
+        batch.put_cf(
+            bh_cf,
+            state_slot_info.height.to_be_bytes(),
+            blockhash.to_bytes(),
+        );
+
+        // Prune old blockhash entries
+        let min_height = state_slot_info
+            .height
+            .saturating_sub(MAX_PROCESSING_AGE as u64 - 1);
+        if min_height > 0 {
+            batch.delete_range_cf(bh_cf, 0u64.to_be_bytes(), min_height.to_be_bytes());
+        }
+
+        // Store new accounts state
+        let acc_cf = self.cf_handle::<AccountIndexKey>();
         let mut num_accounts = 0u64;
         let mut buf = Vec::with_capacity(16 * 1024 * 1024); // 16MiB
         for (pubkey, account) in accounts {
             buf.clear();
             AccountIndexValue::encode(&account, &mut buf);
-            batch.put_cf(
-                self.cf_handle::<AccountIndexKey>(),
-                AccountIndexKey::encode(&pubkey),
-                &buf,
-            );
+            batch.put_cf(acc_cf, AccountIndexKey::encode(&pubkey), &buf);
             num_accounts += 1;
         }
         drop(span);
