@@ -2,6 +2,7 @@ use {
     crate::{
         config::ConfigStorageRocksdbCompression,
         metrics::{READ_ACCOUNTS_BYTES_TOTAL, READ_ACCOUNTS_SECONDS_TOTAL},
+        storage::reader::ReaderState,
     },
     ahash::HashMap,
     anyhow::Context,
@@ -16,12 +17,17 @@ use {
         parse_account_data::{AccountAdditionalDataV3, SplTokenAdditionalDataV2},
         parse_token::{get_token_account_mint, is_known_spl_token_id},
     },
+    solana_commitment_config::CommitmentLevel,
+    solana_rpc_client_types::{
+        config::RpcSimulateTransactionAccountsConfig, response::RpcBlockhash,
+    },
     solana_sdk::{
         account::Account,
         clock::{MAX_PROCESSING_AGE, Slot, UnixTimestamp},
         hash::Hash,
         pubkey::Pubkey,
     },
+    solana_transaction::versioned::VersionedTransaction,
     spl_token_2022_interface::{
         extension::{
             BaseStateWithExtensions, StateWithExtensions,
@@ -160,6 +166,25 @@ pub enum GetAccountsError {
     DecodeAccount(#[from] prost::DecodeError),
     #[error("Invalid param: Token mint could not be unpacked")]
     TokenMintUnpackFailed,
+}
+
+#[derive(Debug)]
+pub struct GetSimulateTransactionData {
+    db_slot: Slot,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GetSimulateTransactionDataError {
+    #[error("rocksdb: {0}")]
+    Rocksdb(#[from] rocksdb::Error),
+    #[error("slot not found")]
+    SlotNotFound,
+    #[error("decode slot: {0}")]
+    DecodeSlot(anyhow::Error),
+    #[error("blockhash not found")]
+    BlockhashNotFound,
+    #[error("{0}")]
+    InvalidParams(String),
 }
 
 #[derive(Debug, Clone)]
@@ -527,6 +552,76 @@ impl Rocksdb {
         .increment(bytes_read);
 
         Ok(slot)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[instrument(skip_all)]
+    pub fn get_simulate_transaction_data(
+        &self,
+        state: &ReaderState,
+        mut unsanitized_tx: VersionedTransaction,
+        sig_verify: bool,
+        replace_recent_blockhash: bool,
+        config_accounts: Option<RpcSimulateTransactionAccountsConfig>,
+        enable_cpi_recording: bool,
+        commitment: CommitmentLevel,
+        slot: Slot,
+        x_subscription_id: Arc<str>,
+    ) -> Result<GetSimulateTransactionData, GetSimulateTransactionDataError> {
+        let mut replacement_blockhash: Option<RpcBlockhash> = None;
+        if replace_recent_blockhash {
+            if sig_verify {
+                return Err(GetSimulateTransactionDataError::InvalidParams(
+                    "sigVerify may not be used with replaceRecentBlockhash".to_string(),
+                ));
+            }
+
+            let height = match commitment {
+                CommitmentLevel::Processed => state.processed_height,
+                CommitmentLevel::Confirmed => state.confirmed_height,
+                CommitmentLevel::Finalized => {
+                    let slot_data = self
+                        .db
+                        .get_cf(self.cf_handle::<SlotIndexKey>(), "slot")?
+                        .ok_or(GetSimulateTransactionDataError::SlotNotFound)?;
+                    SlotIndexValue::decode(&slot_data)
+                        .map_err(GetSimulateTransactionDataError::DecodeSlot)?
+                        .height
+                }
+            };
+            let (&recent_blockhash, _) = state
+                .blockhash_map
+                .iter()
+                .find(|&(_, &h)| h == height)
+                .ok_or(GetSimulateTransactionDataError::BlockhashNotFound)?;
+
+            unsanitized_tx
+                .message
+                .set_recent_blockhash(recent_blockhash);
+
+            let age = state.processed_height.saturating_sub(height);
+            let last_valid_block_height = height + MAX_PROCESSING_AGE as u64 - age;
+            replacement_blockhash.replace(RpcBlockhash {
+                blockhash: recent_blockhash.to_string(),
+                last_valid_block_height,
+            });
+        }
+
+        // let transaction = sanitize_transaction(
+        //     unsanitized_tx,
+        //     bank,
+        //     bank.get_reserved_account_keys(),
+        //     bank.feature_set
+        //         .is_active(&agave_feature_set::static_instruction_limit::id()),
+        // )?;
+
+        // let verification_error = if sig_verify {
+        //     transaction.verify().err()
+        // } else {
+        //     None
+        // };
+
+        todo!()
     }
 }
 

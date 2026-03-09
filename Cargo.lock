@@ -3944,6 +3944,7 @@ dependencies = [
  "solana-commitment-config",
  "solana-perf",
  "solana-rpc-client",
+ "solana-rpc-client-types",
  "solana-sdk",
  "solana-transaction",
  "solana-transaction-status-client-types",

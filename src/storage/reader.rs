@@ -1,14 +1,14 @@
 use {
     crate::{
         metrics::READ_REQUESTS_TOTAL,
-        storage::rocksdb::{GetAccountsError, Rocksdb},
+        storage::rocksdb::{GetAccountsError, GetSimulateTransactionDataError, Rocksdb},
     },
     ahash::HashMap,
     metrics::counter,
     richat_shared::mutex_lock,
     solana_account_decoder::parse_account_data::AccountAdditionalDataV3,
     solana_commitment_config::CommitmentLevel,
-    solana_rpc_client::api::config::RpcSimulateTransactionAccountsConfig,
+    solana_rpc_client_types::config::RpcSimulateTransactionAccountsConfig,
     solana_sdk::{account::Account, clock::Slot, hash::Hash, pubkey::Pubkey},
     solana_transaction::versioned::VersionedTransaction,
     std::{
@@ -128,6 +128,8 @@ pub enum ReadResultSimulateTransaction {
     ReqDrop,
     Timeout,
     MinContextSlotNotReached { context_slot: Slot },
+    InvalidParams(String),
+    RequestFailed(String),
 }
 
 impl fmt::Debug for ReadResultSimulateTransaction {
@@ -138,6 +140,18 @@ impl fmt::Debug for ReadResultSimulateTransaction {
             Self::ReqDrop => write!(f, "ReqDrop"),
             Self::Timeout => write!(f, "Timeout"),
             Self::MinContextSlotNotReached { .. } => write!(f, "MinContextSlotNotReached"),
+            Self::InvalidParams(_) => write!(f, "InvalidParams"),
+            Self::RequestFailed(_) => write!(f, "RequestFailed"),
+        }
+    }
+}
+
+impl From<GetSimulateTransactionDataError> for ReadResultSimulateTransaction {
+    fn from(value: GetSimulateTransactionDataError) -> Self {
+        if let GetSimulateTransactionDataError::InvalidParams(msg) = value {
+            Self::InvalidParams(msg)
+        } else {
+            Self::RequestFailed(value.to_string())
         }
     }
 }
@@ -148,6 +162,7 @@ pub struct ReaderState {
     pub processed_height: Slot,
     pub processed_map: HashMap<Pubkey, Arc<Account>>,
     pub confirmed_slot: Slot,
+    pub confirmed_height: Slot,
     pub confirmed_map: HashMap<Pubkey, Arc<Account>>,
     pub finalized_slot: Slot,
     pub blockhash_map: HashMap<Hash, Slot>,
@@ -450,6 +465,21 @@ impl Reader {
         slot: Slot,
         x_subscription_id: Arc<str>,
     ) -> ReadResultSimulateTransaction {
+        let _result = match db.get_simulate_transaction_data(
+            state,
+            unsanitized_tx,
+            sig_verify,
+            replace_recent_blockhash,
+            config_accounts,
+            enable_cpi_recording,
+            commitment,
+            slot,
+            x_subscription_id,
+        ) {
+            Ok(value) => value,
+            Err(error) => return error.into(),
+        };
+
         todo!()
     }
 

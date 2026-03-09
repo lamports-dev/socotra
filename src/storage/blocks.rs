@@ -598,6 +598,7 @@ fn build_reader_state(
         processed_height,
         processed_map,
         confirmed_slot,
+        confirmed_height: expected_confirmed_height - 1,
         confirmed_map,
         finalized_slot: latest_stored_slot.slot,
         blockhash_map,

@@ -611,6 +611,13 @@ impl RpcRequestHandler for RpcRequestSimulateTransaction {
                     RpcCustomError::MinContextSlotNotReached { context_slot },
                 ))
             }
+            ReadResultSimulateTransaction::InvalidParams(msg) => Ok(jsonrpc_response_error(
+                self.id,
+                jsonrpc_error_invalid_params::<()>(msg, None),
+            )),
+            ReadResultSimulateTransaction::RequestFailed(error) => {
+                anyhow::bail!("request to db failed: {error}")
+            }
         }
     }
 }
