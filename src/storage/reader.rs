@@ -221,7 +221,7 @@ impl Reader {
                 }
             }
 
-            let loop_deadline = Instant::now() + Duration::from_millis(5);
+            let loop_deadline = Instant::now() + Duration::from_millis(3);
             loop {
                 let request = {
                     match mutex_lock(&req_rx).try_recv() {
@@ -306,7 +306,7 @@ impl Reader {
                             {
                                 ReadResultAccount::MinContextSlotNotReached { context_slot: slot }
                             } else {
-                                Self::read_accounts(
+                                Self::worker_read_accounts(
                                     &db,
                                     state,
                                     pubkeys,
@@ -358,7 +358,18 @@ impl Reader {
                                     context_slot: slot,
                                 }
                             } else {
-                                todo!()
+                                Self::worker_simulate_transaction(
+                                    &db,
+                                    state,
+                                    unsanitized_tx,
+                                    sig_verify,
+                                    replace_recent_blockhash,
+                                    config_accounts,
+                                    enable_cpi_recording,
+                                    commitment,
+                                    slot,
+                                    x_subscription_id,
+                                )
                             }
                         });
                     }
@@ -376,7 +387,8 @@ impl Reader {
         }
     }
 
-    fn read_accounts(
+    #[inline]
+    fn worker_read_accounts(
         db: &Rocksdb,
         state: &ReaderState,
         pubkeys: Vec<Pubkey>,
@@ -422,6 +434,23 @@ impl Reader {
             },
             Err(error) => error.into(),
         }
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn worker_simulate_transaction(
+        db: &Rocksdb,
+        state: &ReaderState,
+        unsanitized_tx: VersionedTransaction,
+        sig_verify: bool,
+        replace_recent_blockhash: bool,
+        config_accounts: Option<RpcSimulateTransactionAccountsConfig>,
+        enable_cpi_recording: bool,
+        commitment: CommitmentLevel,
+        slot: Slot,
+        x_subscription_id: Arc<str>,
+    ) -> ReadResultSimulateTransaction {
+        todo!()
     }
 
     pub fn update(&self, update: Arc<ReaderState>) -> anyhow::Result<()> {
