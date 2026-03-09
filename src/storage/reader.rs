@@ -1,10 +1,10 @@
 use {
     crate::{
-        metrics::{READ_ACCOUNTS_BYTES_TOTAL, READ_ACCOUNTS_SECONDS_TOTAL, READ_REQUESTS_TOTAL},
+        metrics::READ_REQUESTS_TOTAL,
         storage::rocksdb::{GetAccountsError, Rocksdb},
     },
     ahash::HashMap,
-    metrics::{counter, gauge},
+    metrics::counter,
     richat_shared::mutex_lock,
     solana_account_decoder::parse_account_data::AccountAdditionalDataV3,
     solana_commitment_config::CommitmentLevel,
@@ -306,22 +306,15 @@ impl Reader {
                             {
                                 ReadResultAccount::MinContextSlotNotReached { context_slot: slot }
                             } else {
-                                let read_started_at = Instant::now();
-                                let result = Self::read_accounts(
+                                Self::read_accounts(
                                     &db,
                                     state,
                                     pubkeys,
                                     commitment,
                                     slot,
                                     json_parsed,
-                                    Arc::clone(&x_subscription_id),
-                                );
-                                gauge!(
-                                    READ_ACCOUNTS_SECONDS_TOTAL,
-                                    "x_subscription_id" => x_subscription_id,
+                                    x_subscription_id,
                                 )
-                                .increment(read_started_at.elapsed().as_secs_f64());
-                                result
                             }
                         });
                     }
@@ -395,39 +388,38 @@ impl Reader {
         let mut accounts: Vec<Option<Arc<Account>>> = vec![None; pubkeys.len()];
         let mut mints = HashMap::default();
 
-        match db.get_accounts(&pubkeys, &mut accounts, json_parsed, &mut mints, |pubkey| {
-            if commitment == CommitmentLevel::Processed
-                && let Some(account) = state.processed_map.get(pubkey)
-            {
-                return Some(Arc::clone(account));
-            }
-            if matches!(
-                commitment,
-                CommitmentLevel::Processed | CommitmentLevel::Confirmed
-            ) && let Some(account) = state.confirmed_map.get(pubkey)
-            {
-                return Some(Arc::clone(account));
-            }
-            None
-        }) {
-            Ok((db_slot, bytes_read)) => {
-                counter!(
-                    READ_ACCOUNTS_BYTES_TOTAL,
-                    "x_subscription_id" => x_subscription_id,
-                )
-                .increment(bytes_read);
-
-                ReadResultAccount::Accounts {
-                    slot: if commitment == CommitmentLevel::Finalized {
-                        db_slot
-                    } else {
-                        slot
-                    },
-                    pubkeys,
-                    accounts,
-                    mints,
+        match db.get_accounts(
+            &pubkeys,
+            &mut accounts,
+            json_parsed,
+            &mut mints,
+            |pubkey| {
+                if commitment == CommitmentLevel::Processed
+                    && let Some(account) = state.processed_map.get(pubkey)
+                {
+                    return Some(Arc::clone(account));
                 }
-            }
+                if matches!(
+                    commitment,
+                    CommitmentLevel::Processed | CommitmentLevel::Confirmed
+                ) && let Some(account) = state.confirmed_map.get(pubkey)
+                {
+                    return Some(Arc::clone(account));
+                }
+                None
+            },
+            x_subscription_id,
+        ) {
+            Ok(db_slot) => ReadResultAccount::Accounts {
+                slot: if commitment == CommitmentLevel::Finalized {
+                    db_slot
+                } else {
+                    slot
+                },
+                pubkeys,
+                accounts,
+                mints,
+            },
             Err(error) => error.into(),
         }
     }

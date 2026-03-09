@@ -1,8 +1,12 @@
 use {
-    crate::config::ConfigStorageRocksdbCompression,
+    crate::{
+        config::ConfigStorageRocksdbCompression,
+        metrics::{READ_ACCOUNTS_BYTES_TOTAL, READ_ACCOUNTS_SECONDS_TOTAL},
+    },
     ahash::HashMap,
     anyhow::Context,
     bytes::Buf,
+    metrics::{counter, gauge},
     prost::encoding::{decode_varint, encode_varint},
     rocksdb::{
         ColumnFamily, ColumnFamilyDescriptor, DB, DBCompressionType, IngestExternalFileOptions,
@@ -400,9 +404,12 @@ impl Rocksdb {
         json_parsed: bool,
         mints: &mut HashMap<Pubkey, AccountAdditionalDataV3>,
         get_account: impl Fn(&Pubkey) -> Option<Arc<Account>>,
-    ) -> Result<(Slot, u64), GetAccountsError> {
-        let snapshot = self.db.snapshot();
+        x_subscription_id: Arc<str>,
+    ) -> Result<Slot, GetAccountsError> {
+        let read_started_at = Instant::now();
         let mut bytes_read = 0u64;
+
+        let snapshot = self.db.snapshot();
 
         let slot_data = snapshot
             .get_cf(self.cf_handle::<SlotIndexKey>(), "slot")?
@@ -507,7 +514,19 @@ impl Rocksdb {
             }
         }
 
-        Ok((slot, bytes_read))
+        gauge!(
+            READ_ACCOUNTS_SECONDS_TOTAL,
+            "x_subscription_id" => Arc::clone(&x_subscription_id),
+        )
+        .increment(read_started_at.elapsed().as_secs_f64());
+
+        counter!(
+            READ_ACCOUNTS_BYTES_TOTAL,
+            "x_subscription_id" => x_subscription_id,
+        )
+        .increment(bytes_read);
+
+        Ok(slot)
     }
 }
 
