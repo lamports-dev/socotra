@@ -40,8 +40,9 @@ struct Args {
     #[clap(long)]
     pub check: bool,
 
-    /// Debug: fetch current slot from RPC and store it, skip catching up to the tip
-    #[clap(long)]
+    /// WARNING: DB state will be broken. Debug only.
+    /// Fetch current slot from RPC and store it, skip catching up to the tip.
+    #[clap(long, hide = true)]
     pub skip_catching_tip: bool,
 }
 
