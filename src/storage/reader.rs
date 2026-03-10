@@ -445,7 +445,8 @@ impl Reader {
             &mut accounts,
             json_parsed,
             &mut mints,
-            |pubkey| state.get_account(pubkey, commitment),
+            state,
+            commitment,
             x_subscription_id,
         ) {
             Ok(db_slot) => ReadResultAccount::Accounts {

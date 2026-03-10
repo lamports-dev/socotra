@@ -34,6 +34,7 @@ use {
         message::{AddressLoader, v0::LoadedAddresses},
         pubkey::Pubkey,
         slot_hashes::SlotHashes,
+        sysvar,
     },
     solana_transaction::{sanitized::MessageHash, versioned::VersionedTransaction},
     solana_transaction_error::AddressLoaderError,
@@ -432,7 +433,8 @@ impl Rocksdb {
         accounts: &mut [Option<Arc<Account>>],
         json_parsed: bool,
         mints: &mut HashMap<Pubkey, AccountAdditionalDataV3>,
-        get_account: impl Fn(&Pubkey) -> Option<Arc<Account>>,
+        state: &ReaderState,
+        commitment: CommitmentLevel,
         x_subscription_id: Arc<str>,
     ) -> Result<Slot, GetAccountsError> {
         let snapshot = self.db.snapshot();
@@ -444,7 +446,7 @@ impl Rocksdb {
             .iter()
             .enumerate()
             .filter_map(|(i, pubkey)| {
-                accounts[i] = get_account(pubkey);
+                accounts[i] = state.get_account(pubkey, commitment);
                 accounts[i].is_none().then_some(i)
             })
             .collect();
@@ -470,11 +472,8 @@ impl Rocksdb {
             }
 
             if !mint_pubkeys.is_empty() {
-                let clock_id = solana_sdk::sysvar::clock::id();
-                let clock_account = match get_account(&clock_id) {
-                    Some(account) => (*account).clone(),
-                    None => reader.get_sysvar(&clock_id)?,
-                };
+                let clock_id = sysvar::clock::id();
+                let clock_account = reader.get_sysvar(&clock_id, state, commitment)?;
                 // Clock layout: slot(8) + epoch_start_timestamp(8) + epoch(8) + leader_schedule_epoch(8) + unix_timestamp(8)
                 let unix_timestamp = clock_account
                     .data
@@ -487,7 +486,7 @@ impl Rocksdb {
                     .iter()
                     .enumerate()
                     .filter_map(|(i, pubkey)| {
-                        mint_accounts[i] = get_account(pubkey);
+                        mint_accounts[i] = state.get_account(pubkey, commitment);
                         mint_accounts[i].is_none().then_some(i)
                     })
                     .collect();
@@ -672,11 +671,61 @@ impl<'a> AccountReader<'a> {
         }
     }
 
-    fn get_sysvar(&mut self, pubkey: &Pubkey) -> Result<Account, AccountReaderError> {
-        self.get_multi(std::iter::once(pubkey))
-            .next()
-            .unwrap_or(Ok(None))?
-            .ok_or(AccountReaderError::SysvarNotFound)
+    /// Load sysvar account based on commitment level.
+    ///
+    /// Sysvars that update every slot (Clock, SlotHashes, SlotHistory) must come
+    /// from the in-memory state at processed/confirmed — falling back to DB would
+    /// give stale data. Missing at any level is an error.
+    ///
+    /// All other sysvars (EpochSchedule, Rent, etc.) update rarely or never, so
+    /// they may not be in the in-memory maps. For those we check state first and
+    /// fall back to the DB snapshot.
+    fn get_sysvar(
+        &mut self,
+        pubkey: &Pubkey,
+        state: &ReaderState,
+        commitment: CommitmentLevel,
+    ) -> Result<Account, AccountReaderError> {
+        let updates_every_slot = *pubkey == sysvar::clock::id()
+            || *pubkey == sysvar::slot_hashes::id()
+            || *pubkey == sysvar::slot_history::id();
+
+        if updates_every_slot {
+            match commitment {
+                // Check processed_map first, fall back to confirmed_map
+                // only when heights match (otherwise confirmed_map is stale).
+                CommitmentLevel::Processed => {
+                    let account = state.processed_map.get(pubkey).or_else(|| {
+                        (state.processed_height == state.confirmed_height)
+                            .then(|| state.confirmed_map.get(pubkey))
+                            .flatten()
+                    });
+                    account
+                        .map(|a| (**a).clone())
+                        .ok_or(AccountReaderError::SysvarNotFound)
+                }
+                CommitmentLevel::Confirmed => state
+                    .confirmed_map
+                    .get(pubkey)
+                    .map(|a| (**a).clone())
+                    .ok_or(AccountReaderError::SysvarNotFound),
+                CommitmentLevel::Finalized => self
+                    .get_multi(std::iter::once(pubkey))
+                    .next()
+                    .unwrap_or(Ok(None))?
+                    .ok_or(AccountReaderError::SysvarNotFound),
+            }
+        } else {
+            // Rarely-updated sysvars: check state, fall back to DB.
+            match state.get_account(pubkey, commitment) {
+                Some(account) => Ok((*account).clone()),
+                None => self
+                    .get_multi(std::iter::once(pubkey))
+                    .next()
+                    .unwrap_or(Ok(None))?
+                    .ok_or(AccountReaderError::SysvarNotFound),
+            }
+        }
     }
 
     fn get_multi<'b>(
@@ -743,11 +792,8 @@ impl SnapshotAddressLoader {
         }
 
         // Load SlotHashes sysvar
-        let slot_hashes_id = solana_sdk::sysvar::slot_hashes::id();
-        let slot_hashes_account = match state.get_account(&slot_hashes_id, commitment) {
-            Some(account) => (*account).clone(),
-            None => reader.get_sysvar(&slot_hashes_id)?,
-        };
+        let slot_hashes_id = sysvar::slot_hashes::id();
+        let slot_hashes_account = reader.get_sysvar(&slot_hashes_id, state, commitment)?;
         let slot_hashes: SlotHashes =
             bincode::deserialize(&slot_hashes_account.data).unwrap_or_default();
 
