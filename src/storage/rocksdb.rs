@@ -440,21 +440,17 @@ impl Rocksdb {
         get_account: impl Fn(&Pubkey) -> Option<Arc<Account>>,
         x_subscription_id: Arc<str>,
     ) -> Result<Slot, GetAccountsError> {
-        let read_started_at = Instant::now();
-        let mut accounts_read = 0u64;
-        let mut bytes_read = 0u64;
-
         let snapshot = self.db.snapshot();
 
         let slot_data = snapshot
             .get_cf(self.cf_handle::<SlotIndexKey>(), "slot")?
             .ok_or(GetAccountsError::SlotNotFound)?;
-        bytes_read += slot_data.len() as u64;
         let slot = SlotIndexValue::decode(&slot_data)
             .map_err(GetAccountsError::DecodeSlot)?
             .slot;
 
         let cf = self.cf_handle::<AccountIndexKey>();
+        let mut reader = AccountReader::new(&snapshot, cf, x_subscription_id);
 
         let indices: Vec<usize> = pubkeys
             .iter()
@@ -465,17 +461,10 @@ impl Rocksdb {
             })
             .collect();
 
-        let results = snapshot.multi_get_cf(
-            indices
-                .iter()
-                .map(|&i| (cf, AccountIndexKey::encode(&pubkeys[i]))),
-        );
-
-        accounts_read += indices.len() as u64;
+        let results = reader.get_multi(indices.iter().map(|&i| &pubkeys[i]));
         for (idx, result) in indices.into_iter().zip(results) {
-            if let Some(data) = result? {
-                bytes_read += data.len() as u64;
-                accounts[idx] = Some(Arc::new(AccountIndexValue::decode(&data)?));
+            if let Some(account) = result? {
+                accounts[idx] = Some(Arc::new(account));
             }
         }
 
@@ -494,15 +483,8 @@ impl Rocksdb {
 
             if !mint_pubkeys.is_empty() {
                 let clock_id = solana_sdk::sysvar::clock::id();
-                let clock_account = get_account(&clock_id).or_else(|| {
-                    accounts_read += 1;
-                    let data = snapshot
-                        .get_cf(cf, AccountIndexKey::encode(&clock_id))
-                        .ok()
-                        .flatten()?;
-                    bytes_read += data.len() as u64;
-                    AccountIndexValue::decode(&data).ok().map(Arc::new)
-                });
+                let clock_account = get_account(&clock_id)
+                    .or_else(|| reader.get_one(&clock_id).ok().flatten().map(Arc::new));
                 let unix_timestamp = clock_account
                     .and_then(|account| {
                         // Clock layout: slot(8) + epoch_start_timestamp(8) + epoch(8) + leader_schedule_epoch(8) + unix_timestamp(8)
@@ -523,17 +505,11 @@ impl Rocksdb {
                     })
                     .collect();
 
-                accounts_read += db_mint_indices.len() as u64;
-                let mint_results = snapshot.multi_get_cf(
-                    db_mint_indices
-                        .iter()
-                        .map(|&i| (cf, AccountIndexKey::encode(&mint_pubkeys[i]))),
-                );
-
+                let mint_results =
+                    reader.get_multi(db_mint_indices.iter().map(|&i| &mint_pubkeys[i]));
                 for (idx, result) in db_mint_indices.into_iter().zip(mint_results) {
-                    if let Some(data) = result? {
-                        bytes_read += data.len() as u64;
-                        mint_accounts[idx] = Some(Arc::new(AccountIndexValue::decode(&data)?));
+                    if let Some(account) = result? {
+                        mint_accounts[idx] = Some(Arc::new(account));
                     }
                 }
 
@@ -551,24 +527,6 @@ impl Rocksdb {
                 }
             }
         }
-
-        counter!(
-            READ_ACCOUNTS_TOTAL,
-            "x_subscription_id" => Arc::clone(&x_subscription_id),
-        )
-        .increment(accounts_read);
-
-        gauge!(
-            READ_ACCOUNTS_SECONDS_TOTAL,
-            "x_subscription_id" => Arc::clone(&x_subscription_id),
-        )
-        .increment(read_started_at.elapsed().as_secs_f64());
-
-        counter!(
-            READ_ACCOUNTS_BYTES_TOTAL,
-            "x_subscription_id" => x_subscription_id,
-        )
-        .increment(bytes_read);
 
         Ok(slot)
     }
@@ -630,8 +588,9 @@ impl Rocksdb {
         }
 
         let cf = self.cf_handle::<AccountIndexKey>();
+        let mut reader = AccountReader::new(&snapshot, cf, x_subscription_id);
         let address_loader =
-            SnapshotAddressLoader::new(&unsanitized_tx, &snapshot, cf, state, commitment, slot);
+            SnapshotAddressLoader::new(&unsanitized_tx, &mut reader, state, commitment, slot);
 
         // sanitize transaction
         let _transaction = RuntimeTransaction::try_create(
@@ -650,6 +609,74 @@ impl Rocksdb {
     }
 }
 
+struct AccountReader<'a> {
+    snapshot: &'a rocksdb::Snapshot<'a>,
+    cf: &'a ColumnFamily,
+    x_subscription_id: Arc<str>,
+    seconds: f64,
+    accounts_read: usize,
+    bytes_read: usize,
+}
+
+impl<'a> AccountReader<'a> {
+    const fn new(
+        snapshot: &'a rocksdb::Snapshot<'a>,
+        cf: &'a ColumnFamily,
+        x_subscription_id: Arc<str>,
+    ) -> Self {
+        Self {
+            snapshot,
+            cf,
+            x_subscription_id,
+            seconds: 0.0,
+            accounts_read: 0,
+            bytes_read: 0,
+        }
+    }
+
+    fn get_one(&mut self, pubkey: &Pubkey) -> Result<Option<Account>, GetAccountsError> {
+        self.get_multi(std::iter::once(pubkey))
+            .next()
+            .unwrap_or(Ok(None))
+    }
+
+    fn get_multi<'b>(
+        &mut self,
+        pubkeys: impl IntoIterator<Item = &'b Pubkey>,
+    ) -> impl Iterator<Item = Result<Option<Account>, GetAccountsError>> + '_ {
+        let started_at = Instant::now();
+
+        let results = self.snapshot.multi_get_cf(
+            pubkeys
+                .into_iter()
+                .map(|pk| (self.cf, AccountIndexKey::encode(pk))),
+        );
+
+        self.seconds += started_at.elapsed().as_secs_f64();
+        self.accounts_read += results.len();
+        self.bytes_read += results
+            .iter()
+            .filter_map(|result| Some(result.as_ref().ok()?.as_ref()?.len()))
+            .sum::<usize>();
+
+        results.into_iter().map(|result| match result? {
+            Some(data) => Ok(Some(AccountIndexValue::decode(&data)?)),
+            None => Ok(None),
+        })
+    }
+}
+
+impl Drop for AccountReader<'_> {
+    fn drop(&mut self) {
+        counter!(READ_ACCOUNTS_TOTAL, "x_subscription_id" => Arc::clone(&self.x_subscription_id))
+            .increment(self.accounts_read as u64);
+        gauge!(READ_ACCOUNTS_SECONDS_TOTAL, "x_subscription_id" => Arc::clone(&self.x_subscription_id))
+            .increment(self.seconds);
+        counter!(READ_ACCOUNTS_BYTES_TOTAL, "x_subscription_id" => Arc::clone(&self.x_subscription_id))
+            .increment(self.bytes_read as u64);
+    }
+}
+
 struct SnapshotAddressLoader {
     accounts: Rc<Vec<(Pubkey, Account)>>,
     current_slot: Slot,
@@ -659,8 +686,7 @@ struct SnapshotAddressLoader {
 impl SnapshotAddressLoader {
     fn new(
         unsanitized_tx: &VersionedTransaction,
-        snapshot: &rocksdb::Snapshot<'_>,
-        cf: &ColumnFamily,
+        reader: &mut AccountReader<'_>,
         state: &ReaderState,
         commitment: CommitmentLevel,
         slot: Slot,
@@ -679,14 +705,9 @@ impl SnapshotAddressLoader {
 
         // Load SlotHashes sysvar
         let slot_hashes_id = solana_sdk::sysvar::slot_hashes::id();
-        let slot_hashes_account = state.get_account(&slot_hashes_id, commitment).or_else(|| {
-            snapshot
-                .get_cf(cf, AccountIndexKey::encode(&slot_hashes_id))
-                .ok()
-                .flatten()
-                .and_then(|data| AccountIndexValue::decode(&data).ok())
-                .map(Arc::new)
-        });
+        let slot_hashes_account = state
+            .get_account(&slot_hashes_id, commitment)
+            .or_else(|| reader.get_one(&slot_hashes_id).ok().flatten().map(Arc::new));
         let slot_hashes: SlotHashes = slot_hashes_account
             .and_then(|account| bincode::deserialize(&account.data).ok())
             .unwrap_or_default();
@@ -697,13 +718,7 @@ impl SnapshotAddressLoader {
             let account = state
                 .get_account(&lookup.account_key, commitment)
                 .map(|arc| (*arc).clone())
-                .or_else(|| {
-                    snapshot
-                        .get_cf(cf, AccountIndexKey::encode(&lookup.account_key))
-                        .ok()
-                        .flatten()
-                        .and_then(|data| AccountIndexValue::decode(&data).ok())
-                });
+                .or_else(|| reader.get_one(&lookup.account_key).ok().flatten());
             if let Some(account) = account {
                 accounts.push((lookup.account_key, account));
             }
