@@ -1,7 +1,7 @@
 use {
     crate::{
         config::ConfigStorageRocksdbCompression,
-        metrics::{READ_ACCOUNTS_BYTES_TOTAL, READ_ACCOUNTS_SECONDS_TOTAL},
+        metrics::{READ_ACCOUNTS_BYTES_TOTAL, READ_ACCOUNTS_SECONDS_TOTAL, READ_ACCOUNTS_TOTAL},
         storage::reader::ReaderState,
     },
     ahash::HashMap,
@@ -441,6 +441,7 @@ impl Rocksdb {
         x_subscription_id: Arc<str>,
     ) -> Result<Slot, GetAccountsError> {
         let read_started_at = Instant::now();
+        let mut accounts_read = 0u64;
         let mut bytes_read = 0u64;
 
         let snapshot = self.db.snapshot();
@@ -470,6 +471,7 @@ impl Rocksdb {
                 .map(|&i| (cf, AccountIndexKey::encode(&pubkeys[i]))),
         );
 
+        accounts_read += indices.len() as u64;
         for (idx, result) in indices.into_iter().zip(results) {
             if let Some(data) = result? {
                 bytes_read += data.len() as u64;
@@ -493,6 +495,7 @@ impl Rocksdb {
             if !mint_pubkeys.is_empty() {
                 let clock_id = solana_sdk::sysvar::clock::id();
                 let clock_account = get_account(&clock_id).or_else(|| {
+                    accounts_read += 1;
                     let data = snapshot
                         .get_cf(cf, AccountIndexKey::encode(&clock_id))
                         .ok()
@@ -520,6 +523,7 @@ impl Rocksdb {
                     })
                     .collect();
 
+                accounts_read += db_mint_indices.len() as u64;
                 let mint_results = snapshot.multi_get_cf(
                     db_mint_indices
                         .iter()
@@ -547,6 +551,12 @@ impl Rocksdb {
                 }
             }
         }
+
+        counter!(
+            READ_ACCOUNTS_TOTAL,
+            "x_subscription_id" => Arc::clone(&x_subscription_id),
+        )
+        .increment(accounts_read);
 
         gauge!(
             READ_ACCOUNTS_SECONDS_TOTAL,
