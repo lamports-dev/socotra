@@ -17,6 +17,10 @@ use {
         parse_account_data::{AccountAdditionalDataV3, SplTokenAdditionalDataV2},
         parse_token::{get_token_account_mint, is_known_spl_token_id},
     },
+    solana_address_lookup_table_interface::{
+        error::AddressLookupError, program as address_lookup_table_program,
+        state::AddressLookupTable,
+    },
     solana_commitment_config::CommitmentLevel,
     solana_rpc_client_types::{
         config::RpcSimulateTransactionAccountsConfig, response::RpcBlockhash,
@@ -26,9 +30,12 @@ use {
         account::Account,
         clock::{MAX_PROCESSING_AGE, Slot, UnixTimestamp},
         hash::Hash,
+        message::{AddressLoader, v0::LoadedAddresses},
         pubkey::Pubkey,
+        slot_hashes::SlotHashes,
     },
     solana_transaction::{sanitized::MessageHash, versioned::VersionedTransaction},
+    solana_transaction_error::AddressLoaderError,
     spl_token_2022_interface::{
         extension::{
             BaseStateWithExtensions, StateWithExtensions,
@@ -39,6 +46,7 @@ use {
     std::{
         collections::BTreeMap,
         path::{Path, PathBuf},
+        rc::Rc,
         sync::Arc,
         time::Instant,
     },
@@ -566,10 +574,12 @@ impl Rocksdb {
         config_accounts: Option<RpcSimulateTransactionAccountsConfig>,
         enable_cpi_recording: bool,
         commitment: CommitmentLevel,
-        slot: Slot,
+        mut slot: Slot,
         x_subscription_id: Arc<str>,
         agave_feature_enable_static_instruction_limit: bool,
     ) -> Result<GetSimulateTransactionData, GetSimulateTransactionDataError> {
+        let snapshot = self.db.snapshot();
+
         let mut replacement_blockhash: Option<RpcBlockhash> = None;
         if replace_recent_blockhash {
             if sig_verify {
@@ -582,13 +592,13 @@ impl Rocksdb {
                 CommitmentLevel::Processed => state.processed_height,
                 CommitmentLevel::Confirmed => state.confirmed_height,
                 CommitmentLevel::Finalized => {
-                    let slot_data = self
-                        .db
+                    let slot_data = snapshot
                         .get_cf(self.cf_handle::<SlotIndexKey>(), "slot")?
                         .ok_or(GetSimulateTransactionDataError::SlotNotFound)?;
-                    SlotIndexValue::decode(&slot_data)
-                        .map_err(GetSimulateTransactionDataError::DecodeSlot)?
-                        .height
+                    let slot_info = SlotIndexValue::decode(&slot_data)
+                        .map_err(GetSimulateTransactionDataError::DecodeSlot)?;
+                    slot = slot_info.slot;
+                    slot_info.height
                 }
             };
             let (&recent_blockhash, _) = state
@@ -609,31 +619,155 @@ impl Rocksdb {
             });
         }
 
-        // let transaction = RuntimeTransaction::try_create(
-        //     unsanitized_tx,
-        //     MessageHash::Compute,
-        //     None,
-        //     address_loader,
-        //     &Default::default(), // reserved_account_keys
-        //     agave_feature_enable_static_instruction_limit,
-        // )
-        // .map_err(|err| GetSimulateTransactionDataError::InvalidParams(format!("invalid transaction: {err}")))?;
+        let cf = self.cf_handle::<AccountIndexKey>();
+        let address_loader =
+            SnapshotAddressLoader::new(&unsanitized_tx, &snapshot, cf, state, commitment, slot);
 
-        // let transaction = sanitize_transaction(
-        //     unsanitized_tx,
-        //     bank,
-        //     bank.get_reserved_account_keys(),
-        //     bank.feature_set
-        //         .is_active(&agave_feature_set::static_instruction_limit::id()),
-        // )?;
-
-        // let verification_error = if sig_verify {
-        //     transaction.verify().err()
-        // } else {
-        //     None
-        // };
+        // sanitize transaction
+        let _transaction = RuntimeTransaction::try_create(
+            unsanitized_tx,
+            MessageHash::Compute,
+            None,
+            address_loader,
+            &Default::default(), // reserved_account_keys
+            agave_feature_enable_static_instruction_limit,
+        )
+        .map_err(|err| {
+            GetSimulateTransactionDataError::InvalidParams(format!("invalid transaction: {err}"))
+        })?;
 
         todo!()
+    }
+}
+
+struct SnapshotAddressLoader {
+    accounts: Rc<Vec<(Pubkey, Account)>>,
+    current_slot: Slot,
+    slot_hashes: Rc<SlotHashes>,
+}
+
+impl SnapshotAddressLoader {
+    fn new(
+        unsanitized_tx: &VersionedTransaction,
+        snapshot: &rocksdb::Snapshot<'_>,
+        cf: &ColumnFamily,
+        state: &ReaderState,
+        commitment: CommitmentLevel,
+        slot: Slot,
+    ) -> Self {
+        let lookups = unsanitized_tx
+            .message
+            .address_table_lookups()
+            .unwrap_or_default();
+        if lookups.is_empty() {
+            return Self {
+                accounts: Rc::new(Vec::new()),
+                current_slot: slot,
+                slot_hashes: Rc::new(SlotHashes::default()),
+            };
+        }
+
+        // Load SlotHashes sysvar
+        let slot_hashes_id = solana_sdk::sysvar::slot_hashes::id();
+        let slot_hashes_account = state.get_account(&slot_hashes_id, commitment).or_else(|| {
+            snapshot
+                .get_cf(cf, AccountIndexKey::encode(&slot_hashes_id))
+                .ok()
+                .flatten()
+                .and_then(|data| AccountIndexValue::decode(&data).ok())
+                .map(Arc::new)
+        });
+        let slot_hashes: SlotHashes = slot_hashes_account
+            .and_then(|account| bincode::deserialize(&account.data).ok())
+            .unwrap_or_default();
+
+        // Load lookup table accounts
+        let mut accounts = Vec::with_capacity(lookups.len());
+        for lookup in lookups {
+            let account = state
+                .get_account(&lookup.account_key, commitment)
+                .map(|arc| (*arc).clone())
+                .or_else(|| {
+                    snapshot
+                        .get_cf(cf, AccountIndexKey::encode(&lookup.account_key))
+                        .ok()
+                        .flatten()
+                        .and_then(|data| AccountIndexValue::decode(&data).ok())
+                });
+            if let Some(account) = account {
+                accounts.push((lookup.account_key, account));
+            }
+        }
+
+        Self {
+            accounts: Rc::new(accounts),
+            current_slot: slot,
+            slot_hashes: Rc::new(slot_hashes),
+        }
+    }
+}
+
+impl Clone for SnapshotAddressLoader {
+    fn clone(&self) -> Self {
+        Self {
+            accounts: Rc::clone(&self.accounts),
+            current_slot: self.current_slot,
+            slot_hashes: Rc::clone(&self.slot_hashes),
+        }
+    }
+}
+
+impl AddressLoader for SnapshotAddressLoader {
+    fn load_addresses(
+        self,
+        lookups: &[solana_sdk::message::v0::MessageAddressTableLookup],
+    ) -> Result<LoadedAddresses, AddressLoaderError> {
+        let mut loaded_addresses = LoadedAddresses::default();
+        for lookup in lookups {
+            let account = self
+                .accounts
+                .iter()
+                .find(|(pubkey, _)| pubkey == &lookup.account_key)
+                .map(|(_, account)| account)
+                .ok_or(AddressLoaderError::LookupTableAccountNotFound)?;
+
+            if account.owner != address_lookup_table_program::id() {
+                return Err(AddressLoaderError::InvalidAccountOwner);
+            }
+
+            let lookup_table = AddressLookupTable::deserialize(&account.data)
+                .map_err(|_| AddressLoaderError::InvalidAccountData)?;
+
+            let writable = lookup_table
+                .lookup(
+                    self.current_slot,
+                    &lookup.writable_indexes,
+                    &self.slot_hashes,
+                )
+                .map_err(map_address_lookup_error)?;
+            loaded_addresses.writable.extend(writable);
+
+            let readonly = lookup_table
+                .lookup(
+                    self.current_slot,
+                    &lookup.readonly_indexes,
+                    &self.slot_hashes,
+                )
+                .map_err(map_address_lookup_error)?;
+            loaded_addresses.readonly.extend(readonly);
+        }
+        Ok(loaded_addresses)
+    }
+}
+
+const fn map_address_lookup_error(error: AddressLookupError) -> AddressLoaderError {
+    match error {
+        AddressLookupError::LookupTableAccountNotFound => {
+            AddressLoaderError::LookupTableAccountNotFound
+        }
+        AddressLookupError::InvalidAccountOwner => AddressLoaderError::InvalidAccountOwner,
+        AddressLookupError::InvalidAccountData => AddressLoaderError::InvalidAccountData,
+        AddressLookupError::InvalidLookupIndex => AddressLoaderError::InvalidLookupIndex,
     }
 }
 

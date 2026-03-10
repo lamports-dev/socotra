@@ -169,6 +169,28 @@ pub struct ReaderState {
     pub blockhash_map: HashMap<Hash, Slot>,
 }
 
+impl ReaderState {
+    pub fn get_account(
+        &self,
+        pubkey: &Pubkey,
+        commitment: CommitmentLevel,
+    ) -> Option<Arc<Account>> {
+        if commitment == CommitmentLevel::Processed
+            && let Some(account) = self.processed_map.get(pubkey)
+        {
+            return Some(Arc::clone(account));
+        }
+        if matches!(
+            commitment,
+            CommitmentLevel::Processed | CommitmentLevel::Confirmed
+        ) && let Some(account) = self.confirmed_map.get(pubkey)
+        {
+            return Some(Arc::clone(account));
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Reader {
     update_tx: broadcast::Sender<Arc<ReaderState>>,
@@ -423,21 +445,7 @@ impl Reader {
             &mut accounts,
             json_parsed,
             &mut mints,
-            |pubkey| {
-                if commitment == CommitmentLevel::Processed
-                    && let Some(account) = state.processed_map.get(pubkey)
-                {
-                    return Some(Arc::clone(account));
-                }
-                if matches!(
-                    commitment,
-                    CommitmentLevel::Processed | CommitmentLevel::Confirmed
-                ) && let Some(account) = state.confirmed_map.get(pubkey)
-                {
-                    return Some(Arc::clone(account));
-                }
-                None
-            },
+            |pubkey| state.get_account(pubkey, commitment),
             x_subscription_id,
         ) {
             Ok(db_slot) => ReadResultAccount::Accounts {
