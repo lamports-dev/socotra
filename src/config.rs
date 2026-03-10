@@ -195,6 +195,8 @@ pub struct ConfigRpc {
     /// Request timeout
     #[serde(with = "humantime_serde")]
     pub request_timeout: Duration,
+    /// Enable static instruction limit (agave feature)
+    pub agave_feature_enable_static_instruction_limit: bool,
 }
 
 impl Default for ConfigRpc {
@@ -205,6 +207,7 @@ impl Default for ConfigRpc {
             body_limit: 10 * 1024,
             extra_headers: Default::default(),
             request_timeout: Duration::from_secs(60),
+            agave_feature_enable_static_instruction_limit: false,
         }
     }
 }

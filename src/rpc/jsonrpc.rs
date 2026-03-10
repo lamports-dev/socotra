@@ -46,6 +46,7 @@ use {
 #[derive(Debug)]
 pub struct State {
     reader: Reader,
+    agave_feature_enable_static_instruction_limit: bool,
 }
 
 pub fn create_request_processor(
@@ -54,7 +55,11 @@ pub fn create_request_processor(
 ) -> RpcRequestsProcessor<Arc<State>> {
     let mut processor = RpcRequestsProcessor::new(
         config.body_limit,
-        Arc::new(State { reader }),
+        Arc::new(State {
+            reader,
+            agave_feature_enable_static_instruction_limit: config
+                .agave_feature_enable_static_instruction_limit,
+        }),
         config.extra_headers,
     );
 
@@ -596,6 +601,7 @@ impl RpcRequestHandler for RpcRequestSimulateTransaction {
                 self.enable_cpi_recording,
                 self.commitment,
                 self.min_context_slot,
+                self.state.agave_feature_enable_static_instruction_limit,
             )
             .await
         {

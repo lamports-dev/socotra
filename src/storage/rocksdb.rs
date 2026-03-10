@@ -21,13 +21,14 @@ use {
     solana_rpc_client_types::{
         config::RpcSimulateTransactionAccountsConfig, response::RpcBlockhash,
     },
+    solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
         account::Account,
         clock::{MAX_PROCESSING_AGE, Slot, UnixTimestamp},
         hash::Hash,
         pubkey::Pubkey,
     },
-    solana_transaction::versioned::VersionedTransaction,
+    solana_transaction::{sanitized::MessageHash, versioned::VersionedTransaction},
     spl_token_2022_interface::{
         extension::{
             BaseStateWithExtensions, StateWithExtensions,
@@ -567,12 +568,13 @@ impl Rocksdb {
         commitment: CommitmentLevel,
         slot: Slot,
         x_subscription_id: Arc<str>,
+        agave_feature_enable_static_instruction_limit: bool,
     ) -> Result<GetSimulateTransactionData, GetSimulateTransactionDataError> {
         let mut replacement_blockhash: Option<RpcBlockhash> = None;
         if replace_recent_blockhash {
             if sig_verify {
                 return Err(GetSimulateTransactionDataError::InvalidParams(
-                    "sigVerify may not be used with replaceRecentBlockhash".to_string(),
+                    "sigVerify may not be used with replaceRecentBlockhash".to_owned(),
                 ));
             }
 
@@ -606,6 +608,16 @@ impl Rocksdb {
                 last_valid_block_height,
             });
         }
+
+        // let transaction = RuntimeTransaction::try_create(
+        //     unsanitized_tx,
+        //     MessageHash::Compute,
+        //     None,
+        //     address_loader,
+        //     &Default::default(), // reserved_account_keys
+        //     agave_feature_enable_static_instruction_limit,
+        // )
+        // .map_err(|err| GetSimulateTransactionDataError::InvalidParams(format!("invalid transaction: {err}")))?;
 
         // let transaction = sanitize_transaction(
         //     unsanitized_tx,
