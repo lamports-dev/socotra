@@ -166,14 +166,10 @@ impl ColumnName for BlockhashIndexKey {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GetAccountsError {
-    #[error("rocksdb: {0}")]
-    Rocksdb(#[from] rocksdb::Error),
-    #[error("slot not found")]
-    SlotNotFound,
-    #[error("decode slot: {0}")]
-    DecodeSlot(anyhow::Error),
-    #[error("decode account: {0}")]
-    DecodeAccount(#[from] prost::DecodeError),
+    #[error("slot index: {0}")]
+    SlotIndex(#[from] GetSlotIndexError),
+    #[error("account reader: {0}")]
+    AccountReader(#[from] AccountReaderError),
     #[error("Invalid param: Token mint could not be unpacked")]
     TokenMintUnpackFailed,
 }
@@ -185,12 +181,10 @@ pub struct GetSimulateTransactionData {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GetSimulateTransactionDataError {
-    #[error("rocksdb: {0}")]
-    Rocksdb(#[from] rocksdb::Error),
-    #[error("slot not found")]
-    SlotNotFound,
-    #[error("decode slot: {0}")]
-    DecodeSlot(anyhow::Error),
+    #[error("slot index: {0}")]
+    SlotIndex(#[from] GetSlotIndexError),
+    #[error("account reader: {0}")]
+    AccountReader(#[from] AccountReaderError),
     #[error("blockhash not found")]
     BlockhashNotFound,
     #[error("{0}")]
@@ -442,16 +436,9 @@ impl Rocksdb {
         x_subscription_id: Arc<str>,
     ) -> Result<Slot, GetAccountsError> {
         let snapshot = self.db.snapshot();
+        let slot = snapshot_load_slot_index(self, &snapshot)?.slot;
 
-        let slot_data = snapshot
-            .get_cf(self.cf_handle::<SlotIndexKey>(), "slot")?
-            .ok_or(GetAccountsError::SlotNotFound)?;
-        let slot = SlotIndexValue::decode(&slot_data)
-            .map_err(GetAccountsError::DecodeSlot)?
-            .slot;
-
-        let cf = self.cf_handle::<AccountIndexKey>();
-        let mut reader = AccountReader::new(&snapshot, cf, x_subscription_id);
+        let mut reader = AccountReader::new(self, &snapshot, x_subscription_id);
 
         let indices: Vec<usize> = pubkeys
             .iter()
@@ -484,16 +471,15 @@ impl Rocksdb {
 
             if !mint_pubkeys.is_empty() {
                 let clock_id = solana_sdk::sysvar::clock::id();
-                let clock_account = get_account(&clock_id)
-                    .or_else(|| reader.get_one(&clock_id).ok().flatten().map(Arc::new));
+                let clock_account = match get_account(&clock_id) {
+                    Some(account) => (*account).clone(),
+                    None => reader.get_sysvar(&clock_id)?,
+                };
+                // Clock layout: slot(8) + epoch_start_timestamp(8) + epoch(8) + leader_schedule_epoch(8) + unix_timestamp(8)
                 let unix_timestamp = clock_account
-                    .and_then(|account| {
-                        // Clock layout: slot(8) + epoch_start_timestamp(8) + epoch(8) + leader_schedule_epoch(8) + unix_timestamp(8)
-                        account
-                            .data
-                            .get(32..40)
-                            .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
-                    })
+                    .data
+                    .get(32..40)
+                    .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
                     .unwrap_or(0);
 
                 let mut mint_accounts: Vec<Option<Arc<Account>>> = vec![None; mint_pubkeys.len()];
@@ -561,11 +547,7 @@ impl Rocksdb {
                 CommitmentLevel::Processed => state.processed_height,
                 CommitmentLevel::Confirmed => state.confirmed_height,
                 CommitmentLevel::Finalized => {
-                    let slot_data = snapshot
-                        .get_cf(self.cf_handle::<SlotIndexKey>(), "slot")?
-                        .ok_or(GetSimulateTransactionDataError::SlotNotFound)?;
-                    let slot_info = SlotIndexValue::decode(&slot_data)
-                        .map_err(GetSimulateTransactionDataError::DecodeSlot)?;
+                    let slot_info = snapshot_load_slot_index(self, &snapshot)?;
                     slot = slot_info.slot;
                     slot_info.height
                 }
@@ -588,10 +570,9 @@ impl Rocksdb {
             });
         }
 
-        let cf = self.cf_handle::<AccountIndexKey>();
-        let mut reader = AccountReader::new(&snapshot, cf, x_subscription_id);
+        let mut reader = AccountReader::new(self, &snapshot, x_subscription_id);
         let address_loader =
-            SnapshotAddressLoader::new(&unsanitized_tx, &mut reader, state, commitment, slot);
+            SnapshotAddressLoader::new(&unsanitized_tx, &mut reader, state, commitment, slot)?;
 
         // sanitize transaction
         let transaction = RuntimeTransaction::try_create(
@@ -636,6 +617,36 @@ impl Rocksdb {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum GetSlotIndexError {
+    #[error("rocksdb: {0}")]
+    Rocksdb(#[from] rocksdb::Error),
+    #[error("slot not found")]
+    NotFound,
+    #[error("decode: {0}")]
+    Decode(anyhow::Error),
+}
+
+fn snapshot_load_slot_index(
+    rocksdb: &Rocksdb,
+    snapshot: &rocksdb::Snapshot<'_>,
+) -> Result<SlotIndexValue, GetSlotIndexError> {
+    let slot_data = snapshot
+        .get_cf(rocksdb.cf_handle::<SlotIndexKey>(), "slot")?
+        .ok_or(GetSlotIndexError::NotFound)?;
+    SlotIndexValue::decode(&slot_data).map_err(GetSlotIndexError::Decode)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AccountReaderError {
+    #[error("rocksdb: {0}")]
+    Rocksdb(#[from] rocksdb::Error),
+    #[error("decode: {0}")]
+    Decode(#[from] prost::DecodeError),
+    #[error("sysvar not found")]
+    SysvarNotFound,
+}
+
 struct AccountReader<'a> {
     snapshot: &'a rocksdb::Snapshot<'a>,
     cf: &'a ColumnFamily,
@@ -646,14 +657,14 @@ struct AccountReader<'a> {
 }
 
 impl<'a> AccountReader<'a> {
-    const fn new(
+    fn new(
+        rocksdb: &'a Rocksdb,
         snapshot: &'a rocksdb::Snapshot<'a>,
-        cf: &'a ColumnFamily,
         x_subscription_id: Arc<str>,
     ) -> Self {
         Self {
             snapshot,
-            cf,
+            cf: rocksdb.cf_handle::<AccountIndexKey>(),
             x_subscription_id,
             seconds: 0.0,
             accounts_read: 0,
@@ -661,16 +672,17 @@ impl<'a> AccountReader<'a> {
         }
     }
 
-    fn get_one(&mut self, pubkey: &Pubkey) -> Result<Option<Account>, GetAccountsError> {
+    fn get_sysvar(&mut self, pubkey: &Pubkey) -> Result<Account, AccountReaderError> {
         self.get_multi(std::iter::once(pubkey))
             .next()
-            .unwrap_or(Ok(None))
+            .unwrap_or(Ok(None))?
+            .ok_or(AccountReaderError::SysvarNotFound)
     }
 
     fn get_multi<'b>(
         &mut self,
         pubkeys: impl IntoIterator<Item = &'b Pubkey>,
-    ) -> impl Iterator<Item = Result<Option<Account>, GetAccountsError>> + '_ {
+    ) -> impl Iterator<Item = Result<Option<Account>, AccountReaderError>> + '_ {
         let started_at = Instant::now();
 
         let results = self.snapshot.multi_get_cf(
@@ -717,45 +729,54 @@ impl SnapshotAddressLoader {
         state: &ReaderState,
         commitment: CommitmentLevel,
         slot: Slot,
-    ) -> Self {
+    ) -> Result<Self, AccountReaderError> {
         let lookups = unsanitized_tx
             .message
             .address_table_lookups()
             .unwrap_or_default();
         if lookups.is_empty() {
-            return Self {
+            return Ok(Self {
                 accounts: Rc::new(Vec::new()),
                 current_slot: slot,
                 slot_hashes: Rc::new(SlotHashes::default()),
-            };
+            });
         }
 
         // Load SlotHashes sysvar
         let slot_hashes_id = solana_sdk::sysvar::slot_hashes::id();
-        let slot_hashes_account = state
-            .get_account(&slot_hashes_id, commitment)
-            .or_else(|| reader.get_one(&slot_hashes_id).ok().flatten().map(Arc::new));
-        let slot_hashes: SlotHashes = slot_hashes_account
-            .and_then(|account| bincode::deserialize(&account.data).ok())
-            .unwrap_or_default();
+        let slot_hashes_account = match state.get_account(&slot_hashes_id, commitment) {
+            Some(account) => (*account).clone(),
+            None => reader.get_sysvar(&slot_hashes_id)?,
+        };
+        let slot_hashes: SlotHashes =
+            bincode::deserialize(&slot_hashes_account.data).unwrap_or_default();
 
         // Load lookup table accounts
-        let mut accounts = Vec::with_capacity(lookups.len());
+        let mut accounts: Vec<Option<(Pubkey, Account)>> = Vec::with_capacity(lookups.len());
+        let mut db_indices = Vec::with_capacity(lookups.len());
         for lookup in lookups {
-            let account = state
-                .get_account(&lookup.account_key, commitment)
-                .map(|arc| (*arc).clone())
-                .or_else(|| reader.get_one(&lookup.account_key).ok().flatten());
-            if let Some(account) = account {
-                accounts.push((lookup.account_key, account));
+            if let Some(account) = state.get_account(&lookup.account_key, commitment) {
+                accounts.push(Some((lookup.account_key, (*account).clone())));
+            } else {
+                db_indices.push(accounts.len());
+                accounts.push(None);
             }
         }
 
-        Self {
+        let db_results = reader.get_multi(db_indices.iter().map(|&i| &lookups[i].account_key));
+        for (idx, result) in db_indices.into_iter().zip(db_results) {
+            if let Some(account) = result? {
+                accounts[idx] = Some((lookups[idx].account_key, account));
+            }
+        }
+
+        let accounts: Vec<_> = accounts.into_iter().flatten().collect();
+
+        Ok(Self {
             accounts: Rc::new(accounts),
             current_slot: slot,
             slot_hashes: Rc::new(slot_hashes),
-        }
+        })
     }
 }
 
