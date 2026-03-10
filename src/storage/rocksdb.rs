@@ -25,6 +25,7 @@ use {
     solana_rpc_client_types::{
         config::RpcSimulateTransactionAccountsConfig, response::RpcBlockhash,
     },
+    solana_runtime::bank::TransactionSimulationResult,
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
         account::Account,
@@ -593,7 +594,7 @@ impl Rocksdb {
             SnapshotAddressLoader::new(&unsanitized_tx, &mut reader, state, commitment, slot);
 
         // sanitize transaction
-        let _transaction = RuntimeTransaction::try_create(
+        let transaction = RuntimeTransaction::try_create(
             unsanitized_tx,
             MessageHash::Compute,
             None,
@@ -604,6 +605,32 @@ impl Rocksdb {
         .map_err(|err| {
             GetSimulateTransactionDataError::InvalidParams(format!("invalid transaction: {err}"))
         })?;
+
+        let verification_error = if sig_verify {
+            transaction.verify().err()
+        } else {
+            None
+        };
+
+        let TransactionSimulationResult {
+            result,
+            logs,
+            post_simulation_accounts,
+            units_consumed,
+            loaded_accounts_data_size,
+            return_data,
+            inner_instructions,
+            fee,
+            pre_balances,
+            post_balances,
+            pre_token_balances,
+            post_token_balances,
+        } = if let Some(err) = verification_error {
+            TransactionSimulationResult::new_error(err)
+        } else {
+            todo!()
+            // bank.simulate_transaction(&transaction, enable_cpi_recording)
+        };
 
         todo!()
     }

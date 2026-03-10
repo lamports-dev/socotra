@@ -50,6 +50,7 @@ solana-address-lookup-table-interface = { version = "3.0.1", features = ["bincod
 solana-accounts-db = { version = "~3.1.0", features = ["agave-unstable-api"] }
 solana-rpc-client = "~3.1.0"
 solana-rpc-client-types = "~3.1.0"
+solana-runtime = { version = "~3.1.0", features = ["agave-unstable-api"] }
 solana-runtime-transaction = { version = "~3.1.0", features = ["agave-unstable-api"] }
 solana-commitment-config = "3.0.0" # part of sdk
 solana-perf = "~3.1.0"

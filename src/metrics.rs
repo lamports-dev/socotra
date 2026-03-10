@@ -64,10 +64,7 @@ pub fn setup() -> anyhow::Result<PrometheusHandle> {
     describe_histogram!(BUILD_READER_STATE_SECONDS, "Build reader state time");
 
     describe_counter!(READ_REQUESTS_TOTAL, "Total account/slot lookups processed");
-    describe_counter!(
-        READ_ACCOUNTS_TOTAL,
-        "Total accounts read from db"
-    );
+    describe_counter!(READ_ACCOUNTS_TOTAL, "Total accounts read from db");
     describe_gauge!(
         READ_ACCOUNTS_SECONDS_TOTAL,
         "Total time spent reading accounts"
