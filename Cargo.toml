@@ -26,6 +26,7 @@ indicatif = "0.18.4"
 hyper = "1.6.0"
 hyper-util = { version = "0.1.10", features = ["server-auto", "server-graceful"] }
 jsonrpsee-types = "0.26.0"
+litesvm = "0.10.0"
 maplit = "1.0.2"
 metrics = "0.24.1"
 metrics-exporter-prometheus = { version = "0.18.0", default-features = false }

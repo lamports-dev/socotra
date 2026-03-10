@@ -29,7 +29,7 @@ use {
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
         account::Account,
-        clock::{MAX_PROCESSING_AGE, Slot, UnixTimestamp},
+        clock::{Clock, MAX_PROCESSING_AGE, Slot, UnixTimestamp},
         hash::Hash,
         message::{AddressLoader, v0::LoadedAddresses},
         pubkey::Pubkey,
@@ -426,6 +426,7 @@ impl Rocksdb {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[instrument(skip_all, fields(pubkeys = pubkeys.len()))]
     pub fn get_accounts(
         &self,
@@ -474,12 +475,9 @@ impl Rocksdb {
             if !mint_pubkeys.is_empty() {
                 let clock_id = sysvar::clock::id();
                 let clock_account = reader.get_sysvar(&clock_id, state, commitment)?;
-                // Clock layout: slot(8) + epoch_start_timestamp(8) + epoch(8) + leader_schedule_epoch(8) + unix_timestamp(8)
-                let unix_timestamp = clock_account
-                    .data
-                    .get(32..40)
-                    .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
-                    .unwrap_or(0);
+                let clock: Clock = bincode::deserialize(&clock_account.data)
+                    .map_err(AccountReaderError::BincodeDeserialize)?;
+                let unix_timestamp = clock.unix_timestamp;
 
                 let mut mint_accounts: Vec<Option<Arc<Account>>> = vec![None; mint_pubkeys.len()];
                 let db_mint_indices: Vec<usize> = mint_pubkeys
@@ -644,6 +642,8 @@ pub enum AccountReaderError {
     Decode(#[from] prost::DecodeError),
     #[error("sysvar not found")]
     SysvarNotFound,
+    #[error("bincode deserialize: {0}")]
+    BincodeDeserialize(#[from] bincode::Error),
 }
 
 struct AccountReader<'a> {
@@ -794,8 +794,7 @@ impl SnapshotAddressLoader {
         // Load SlotHashes sysvar
         let slot_hashes_id = sysvar::slot_hashes::id();
         let slot_hashes_account = reader.get_sysvar(&slot_hashes_id, state, commitment)?;
-        let slot_hashes: SlotHashes =
-            bincode::deserialize(&slot_hashes_account.data).unwrap_or_default();
+        let slot_hashes: SlotHashes = bincode::deserialize(&slot_hashes_account.data)?;
 
         // Load lookup table accounts
         let mut accounts: Vec<Option<(Pubkey, Account)>> = Vec::with_capacity(lookups.len());
