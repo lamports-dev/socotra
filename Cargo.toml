@@ -26,7 +26,10 @@ indicatif = "0.18.4"
 hyper = "1.6.0"
 hyper-util = { version = "0.1.10", features = ["server-auto", "server-graceful"] }
 jsonrpsee-types = "0.26.0"
+agave-feature-set = "~3.1.0"
 litesvm = "0.10.0"
+solana-loader-v3-interface = { version = "6.1.0", features = ["serde"] }
+solana-sdk-ids = "3.1.0"
 maplit = "1.0.2"
 metrics = "0.24.1"
 metrics-exporter-prometheus = { version = "0.18.0", default-features = false }
@@ -54,9 +57,12 @@ solana-rpc-client-types = "~3.1.0"
 solana-runtime = { version = "~3.1.0", features = ["agave-unstable-api"] }
 solana-runtime-transaction = { version = "~3.1.0", features = ["agave-unstable-api"] }
 solana-commitment-config = "3.0.0" # part of sdk
+solana-message = "3.1.0" # part of sdk
 solana-perf = "~3.1.0"
 solana-sdk = "3.0.0" # part of sdk
+solana-svm-transaction = "~3.1.0"
 solana-transaction = "3.0.0" # part of sdk
+solana-transaction-context = "~3.1.0"
 solana-transaction-error = "~3.1.0"
 solana-transaction-status-client-types = "~3.1.0"
 solana-version = "~3.1.0"

@@ -1,7 +1,9 @@
 use {
     crate::{
         metrics::READ_REQUESTS_TOTAL,
-        storage::rocksdb::{GetAccountsError, GetSimulateTransactionDataError, Rocksdb},
+        storage::rocksdb::{
+            GetAccountsError, GetSimulateTransactionData, GetSimulateTransactionDataError, Rocksdb,
+        },
     },
     ahash::HashMap,
     metrics::counter,
@@ -131,6 +133,7 @@ pub enum ReadResultSimulateTransaction {
     MinContextSlotNotReached { context_slot: Slot },
     InvalidParams(String),
     RequestFailed(String),
+    Success(GetSimulateTransactionData),
 }
 
 impl fmt::Debug for ReadResultSimulateTransaction {
@@ -143,6 +146,7 @@ impl fmt::Debug for ReadResultSimulateTransaction {
             Self::MinContextSlotNotReached { .. } => write!(f, "MinContextSlotNotReached"),
             Self::InvalidParams(_) => write!(f, "InvalidParams"),
             Self::RequestFailed(_) => write!(f, "RequestFailed"),
+            Self::Success(_) => write!(f, "Success"),
         }
     }
 }
@@ -344,15 +348,31 @@ impl Reader {
                             {
                                 ReadResultAccount::MinContextSlotNotReached { context_slot: slot }
                             } else {
-                                Self::worker_read_accounts(
-                                    &db,
-                                    state,
-                                    pubkeys,
-                                    commitment,
-                                    slot,
+                                let mut accounts: Vec<Option<Arc<Account>>> =
+                                    vec![None; pubkeys.len()];
+                                let mut mints = HashMap::default();
+
+                                match db.get_accounts(
+                                    &pubkeys,
+                                    &mut accounts,
                                     json_parsed,
+                                    &mut mints,
+                                    state,
+                                    commitment,
                                     x_subscription_id,
-                                )
+                                ) {
+                                    Ok(db_slot) => ReadResultAccount::Accounts {
+                                        slot: if commitment == CommitmentLevel::Finalized {
+                                            db_slot
+                                        } else {
+                                            slot
+                                        },
+                                        pubkeys,
+                                        accounts,
+                                        mints,
+                                    },
+                                    Err(error) => error.into(),
+                                }
                             }
                         });
                     }
@@ -397,8 +417,7 @@ impl Reader {
                                     context_slot: slot,
                                 }
                             } else {
-                                Self::worker_simulate_transaction(
-                                    &db,
+                                match db.get_simulate_transaction_data(
                                     state,
                                     unsanitized_tx,
                                     sig_verify,
@@ -409,7 +428,10 @@ impl Reader {
                                     slot,
                                     x_subscription_id,
                                     agave_feature_enable_static_instruction_limit,
-                                )
+                                ) {
+                                    Ok(result) => ReadResultSimulateTransaction::Success(result),
+                                    Err(error) => error.into(),
+                                }
                             }
                         });
                     }
@@ -425,76 +447,6 @@ impl Reader {
                 thread::sleep(Duration::from_millis(1));
             }
         }
-    }
-
-    #[inline]
-    fn worker_read_accounts(
-        db: &Rocksdb,
-        state: &ReaderState,
-        pubkeys: Vec<Pubkey>,
-        commitment: CommitmentLevel,
-        slot: Slot,
-        json_parsed: bool,
-        x_subscription_id: Arc<str>,
-    ) -> ReadResultAccount {
-        let mut accounts: Vec<Option<Arc<Account>>> = vec![None; pubkeys.len()];
-        let mut mints = HashMap::default();
-
-        match db.get_accounts(
-            &pubkeys,
-            &mut accounts,
-            json_parsed,
-            &mut mints,
-            state,
-            commitment,
-            x_subscription_id,
-        ) {
-            Ok(db_slot) => ReadResultAccount::Accounts {
-                slot: if commitment == CommitmentLevel::Finalized {
-                    db_slot
-                } else {
-                    slot
-                },
-                pubkeys,
-                accounts,
-                mints,
-            },
-            Err(error) => error.into(),
-        }
-    }
-
-    #[inline]
-    #[allow(clippy::too_many_arguments)]
-    fn worker_simulate_transaction(
-        db: &Rocksdb,
-        state: &ReaderState,
-        unsanitized_tx: VersionedTransaction,
-        sig_verify: bool,
-        replace_recent_blockhash: bool,
-        config_accounts: Option<RpcSimulateTransactionAccountsConfig>,
-        enable_cpi_recording: bool,
-        commitment: CommitmentLevel,
-        slot: Slot,
-        x_subscription_id: Arc<str>,
-        agave_feature_enable_static_instruction_limit: bool,
-    ) -> ReadResultSimulateTransaction {
-        let _result = match db.get_simulate_transaction_data(
-            state,
-            unsanitized_tx,
-            sig_verify,
-            replace_recent_blockhash,
-            config_accounts,
-            enable_cpi_recording,
-            commitment,
-            slot,
-            x_subscription_id,
-            agave_feature_enable_static_instruction_limit,
-        ) {
-            Ok(value) => value,
-            Err(error) => return error.into(),
-        };
-
-        todo!()
     }
 
     pub fn update(&self, update: Arc<ReaderState>) -> anyhow::Result<()> {

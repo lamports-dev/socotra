@@ -4,9 +4,11 @@ use {
         metrics::{READ_ACCOUNTS_BYTES_TOTAL, READ_ACCOUNTS_SECONDS_TOTAL, READ_ACCOUNTS_TOTAL},
         storage::reader::ReaderState,
     },
+    agave_feature_set::FeatureSet,
     ahash::HashMap,
     anyhow::Context,
     bytes::Buf,
+    litesvm::LiteSVM,
     metrics::{counter, gauge},
     prost::encoding::{decode_varint, encode_varint},
     rocksdb::{
@@ -15,6 +17,7 @@ use {
     },
     serde::de::DeserializeOwned,
     solana_account_decoder::{
+        UiAccountEncoding,
         parse_account_data::{AccountAdditionalDataV3, SplTokenAdditionalDataV2},
         parse_token::{get_token_account_mint, is_known_spl_token_id},
     },
@@ -23,10 +26,11 @@ use {
         state::AddressLookupTable,
     },
     solana_commitment_config::CommitmentLevel,
+    solana_loader_v3_interface::state::UpgradeableLoaderState,
+    solana_message::inner_instruction::InnerInstructionsList,
     solana_rpc_client_types::{
         config::RpcSimulateTransactionAccountsConfig, response::RpcBlockhash,
     },
-    solana_runtime::bank::TransactionSimulationResult,
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
         account::Account,
@@ -37,8 +41,11 @@ use {
         slot_hashes::SlotHashes,
         sysvar::SysvarId,
     },
+    solana_sdk_ids::{bpf_loader_upgradeable, sysvar},
+    solana_svm_transaction::svm_message::SVMMessage,
     solana_transaction::{sanitized::MessageHash, versioned::VersionedTransaction},
-    solana_transaction_error::AddressLoaderError,
+    solana_transaction_context::TransactionReturnData,
+    solana_transaction_error::{AddressLoaderError, TransactionResult},
     spl_token_2022_interface::{
         extension::{
             BaseStateWithExtensions, StateWithExtensions,
@@ -176,9 +183,28 @@ pub enum GetAccountsError {
     TokenMintUnpackFailed,
 }
 
-#[derive(Debug)]
 pub struct GetSimulateTransactionData {
-    db_slot: Slot,
+    pub slot: Slot,
+    pub result: TransactionResult<()>,
+    pub logs: Vec<String>,
+    pub units_consumed: u64,
+    pub return_data: TransactionReturnData,
+    pub inner_instructions: Option<InnerInstructionsList>,
+    pub fee: u64,
+    pub replacement_blockhash: Option<RpcBlockhash>,
+    /// (pubkey, Option<Account>), encoding from config_accounts.
+    /// `None` means no accounts were requested.
+    #[allow(clippy::type_complexity)]
+    pub post_simulation_accounts: Option<(Vec<(Pubkey, Option<Account>)>, UiAccountEncoding)>,
+}
+
+impl std::fmt::Debug for GetSimulateTransactionData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GetSimulateTransactionData")
+            .field("slot", &self.slot)
+            .field("result", &self.result)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -571,7 +597,7 @@ impl Rocksdb {
 
         // sanitize transaction
         let transaction = RuntimeTransaction::try_create(
-            unsanitized_tx,
+            unsanitized_tx.clone(),
             MessageHash::Compute,
             None,
             address_loader,
@@ -588,27 +614,99 @@ impl Rocksdb {
             None
         };
 
-        let TransactionSimulationResult {
+        if let Some(err) = verification_error {
+            return Ok(GetSimulateTransactionData {
+                slot,
+                result: Err(err),
+                logs: Vec::new(),
+                units_consumed: 0,
+                return_data: TransactionReturnData::default(),
+                inner_instructions: None,
+                fee: 0,
+                replacement_blockhash,
+                post_simulation_accounts: None,
+            });
+        }
+
+        // Create LiteSVM and load state
+        let mut svm = LiteSVM::default()
+            .with_feature_set(FeatureSet::all_enabled()) // TODO
+            .with_builtins()
+            .with_sigverify(false)
+            .with_blockhash_check(false)
+            .with_transaction_history(0);
+
+        reader.load_sysvars(&mut svm, state, commitment)?;
+
+        // TODO: use get_multi
+        // Load all accounts referenced by the transaction
+        let account_keys: Vec<Pubkey> = transaction.account_keys().iter().copied().collect();
+        for pubkey in &account_keys {
+            reader.load_account(&mut svm, pubkey, state, commitment)?;
+        }
+
+        // TODO: we already loaded
+        // Also load address lookup table accounts for v0 transactions
+        if let Some(lookups) = unsanitized_tx.message.address_table_lookups() {
+            for lookup in lookups {
+                reader.load_account(&mut svm, &lookup.account_key, state, commitment)?;
+            }
+        }
+
+        let (result, logs, units_consumed, return_data, inner_instructions, fee, post_accounts) =
+            match svm.simulate_transaction(unsanitized_tx) {
+                Ok(info) => (
+                    Ok(()),
+                    info.meta.logs,
+                    info.meta.compute_units_consumed,
+                    info.meta.return_data,
+                    info.meta.inner_instructions,
+                    info.meta.fee,
+                    info.post_accounts,
+                ),
+                Err(failed) => (
+                    Err(failed.err),
+                    failed.meta.logs,
+                    failed.meta.compute_units_consumed,
+                    failed.meta.return_data,
+                    failed.meta.inner_instructions,
+                    failed.meta.fee,
+                    Vec::new(),
+                ),
+            };
+
+        let post_simulation_accounts = config_accounts.map(|config| {
+            let encoding = config.encoding.unwrap_or(UiAccountEncoding::Base64);
+            let accounts = config
+                .addresses
+                .iter()
+                .map(|s| {
+                    let pk: Pubkey = s.parse().unwrap_or_default();
+                    let acct = post_accounts
+                        .iter()
+                        .find(|(k, _)| *k == pk)
+                        .map(|(_, a)| Account::from(a.clone()));
+                    (pk, acct)
+                })
+                .collect();
+            (accounts, encoding)
+        });
+
+        Ok(GetSimulateTransactionData {
+            slot,
             result,
             logs,
-            post_simulation_accounts,
             units_consumed,
-            loaded_accounts_data_size,
             return_data,
-            inner_instructions,
+            inner_instructions: if enable_cpi_recording {
+                Some(inner_instructions)
+            } else {
+                None
+            },
             fee,
-            pre_balances,
-            post_balances,
-            pre_token_balances,
-            post_token_balances,
-        } = if let Some(err) = verification_error {
-            TransactionSimulationResult::new_error(err)
-        } else {
-            todo!()
-            // bank.simulate_transaction(&transaction, enable_cpi_recording)
-        };
-
-        todo!()
+            replacement_blockhash,
+            post_simulation_accounts,
+        })
     }
 }
 
@@ -725,6 +823,89 @@ impl<'a> AccountReader<'a> {
             Some(data) => Ok(Some(AccountIndexValue::decode(&data)?)),
             None => Ok(None),
         })
+    }
+
+    // TODO: load from map (same as get_sysvar) + properly use get_multi
+    fn load_sysvars(
+        &mut self,
+        svm: &mut LiteSVM,
+        state: &ReaderState,
+        commitment: CommitmentLevel,
+    ) -> Result<(), AccountReaderError> {
+        let sysvar_ids = [
+            sysvar::clock::id(),
+            sysvar::rent::id(),
+            sysvar::epoch_schedule::id(),
+            sysvar::slot_hashes::id(),
+            sysvar::stake_history::id(),
+            sysvar::fees::id(),
+            sysvar::epoch_rewards::id(),
+            sysvar::last_restart_slot::id(),
+            sysvar::recent_blockhashes::id(),
+            sysvar::slot_history::id(),
+        ];
+
+        for pubkey in &sysvar_ids {
+            let account = if let Some(acct) = state.get_account(pubkey, commitment) {
+                (*acct).clone()
+            } else if let Some(acct) = self
+                .get_multi(std::iter::once(pubkey))
+                .next()
+                .transpose()?
+                .flatten()
+            {
+                acct
+            } else {
+                continue; // sysvar not found, skip (some are optional)
+            };
+            svm.set_account(*pubkey, account).ok();
+        }
+        Ok(())
+    }
+
+    fn load_account(
+        &mut self,
+        svm: &mut LiteSVM,
+        pubkey: &Pubkey,
+        state: &ReaderState,
+        commitment: CommitmentLevel,
+    ) -> Result<(), AccountReaderError> {
+        let account = if let Some(acct) = state.get_account(pubkey, commitment) {
+            (*acct).clone()
+        } else if let Some(acct) = self
+            .get_multi(std::iter::once(pubkey))
+            .next()
+            .transpose()?
+            .flatten()
+        {
+            acct
+        } else {
+            return Ok(());
+        };
+
+        // If executable and owned by BPF loader upgradeable, also load programdata
+        if account.executable
+            && account.owner == bpf_loader_upgradeable::id()
+            && let Ok(UpgradeableLoaderState::Program {
+                programdata_address,
+            }) = bincode::deserialize(&account.data)
+        {
+            // Load the programdata account
+            let pd = if let Some(acct) = state.get_account(&programdata_address, commitment) {
+                Some((*acct).clone())
+            } else {
+                self.get_multi(std::iter::once(&programdata_address))
+                    .next()
+                    .transpose()?
+                    .flatten()
+            };
+            if let Some(pd_account) = pd {
+                svm.set_account(programdata_address, pd_account).ok();
+            }
+        }
+
+        svm.set_account(*pubkey, account).ok();
+        Ok(())
     }
 }
 

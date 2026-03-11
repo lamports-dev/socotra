@@ -34,11 +34,17 @@ use {
             RpcSimulateTransactionConfig,
         },
         custom_error::RpcCustomError,
-        response::{Response as RpcResponse, RpcResponseContext, RpcVersionInfo},
+        response::{
+            Response as RpcResponse, RpcResponseContext, RpcSimulateTransactionResult,
+            RpcVersionInfo,
+        },
     },
     solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
     solana_transaction::versioned::VersionedTransaction,
-    solana_transaction_status_client_types::{TransactionBinaryEncoding, UiTransactionEncoding},
+    solana_transaction_status_client_types::{
+        TransactionBinaryEncoding, UiCompiledInstruction, UiInnerInstructions, UiInstruction,
+        UiReturnDataEncoding, UiTransactionEncoding, UiTransactionReturnData,
+    },
     std::{any::type_name, sync::Arc},
     tracing::{Instrument, info_span},
 };
@@ -623,6 +629,83 @@ impl RpcRequestHandler for RpcRequestSimulateTransaction {
             )),
             ReadResultSimulateTransaction::RequestFailed(error) => {
                 anyhow::bail!("request to db failed: {error}")
+            }
+            ReadResultSimulateTransaction::Success(data) => {
+                // Encode requested accounts
+                let accounts = data.post_simulation_accounts.map(|(accts, encoding)| {
+                    accts
+                        .iter()
+                        .map(|(pk, acct)| {
+                            acct.as_ref()
+                                .map(|a| encode_ui_account(pk, a, encoding, None, None))
+                        })
+                        .collect()
+                });
+
+                // Convert return_data
+                let return_data = if data.return_data.data.is_empty() {
+                    None
+                } else {
+                    Some(UiTransactionReturnData {
+                        program_id: data.return_data.program_id.to_string(),
+                        data: (
+                            base64::engine::general_purpose::STANDARD
+                                .encode(&data.return_data.data),
+                            UiReturnDataEncoding::Base64,
+                        ),
+                    })
+                };
+
+                // Convert inner_instructions
+                let inner_instructions =
+                    data.inner_instructions
+                        .map(|iis: Vec<Vec<_>>| -> Vec<UiInnerInstructions> {
+                            iis.into_iter()
+                                .enumerate()
+                                .filter(|(_, inner)| !inner.is_empty())
+                                .map(|(idx, inner)| UiInnerInstructions {
+                                    index: idx as u8,
+                                    instructions: inner
+                                        .into_iter()
+                                        .map(|ii| {
+                                            UiInstruction::Compiled(UiCompiledInstruction {
+                                                program_id_index: ii.instruction.program_id_index,
+                                                accounts: ii.instruction.accounts.clone(),
+                                                data: bs58::encode(&ii.instruction.data)
+                                                    .into_string(),
+                                                stack_height: Some(ii.stack_height as u32),
+                                            })
+                                        })
+                                        .collect(),
+                                })
+                                .collect()
+                        });
+
+                let err = data.result.err().map(Into::into);
+                let result = RpcSimulateTransactionResult {
+                    err,
+                    logs: Some(data.logs),
+                    accounts,
+                    units_consumed: Some(data.units_consumed),
+                    loaded_accounts_data_size: None, // TODO
+                    return_data,
+                    inner_instructions,
+                    replacement_blockhash: data.replacement_blockhash,
+                    fee: Some(data.fee),
+                    pre_balances: None,        // TODO
+                    post_balances: None,       // TODO
+                    pre_token_balances: None,  // TODO
+                    post_token_balances: None, // TODO
+                    loaded_addresses: None,    // TODO
+                };
+
+                Ok(jsonrpc_response_success(
+                    self.id,
+                    &RpcResponse {
+                        context: RpcResponseContext::new(data.slot),
+                        value: result,
+                    },
+                ))
             }
         }
     }
