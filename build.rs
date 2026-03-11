@@ -26,6 +26,10 @@ fn emit_version() -> anyhow::Result<()> {
         "cargo:rustc-env=RICHAT_PROTO_VERSION={}",
         get_pkg_version(&lockfile, "richat-proto")
     );
+    println!(
+        "cargo:rustc-env=AGAVE_FEATURE_SET_VERSION={}",
+        get_pkg_version(&lockfile, "agave-feature-set")
+    );
 
     Ok(())
 }
