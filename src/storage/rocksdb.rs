@@ -56,7 +56,6 @@ use {
     std::{
         collections::BTreeMap,
         path::{Path, PathBuf},
-        rc::Rc,
         sync::Arc,
         time::Instant,
     },
@@ -602,7 +601,7 @@ impl Rocksdb {
             unsanitized_tx.clone(),
             MessageHash::Compute,
             None,
-            address_loader,
+            &address_loader,
             &Default::default(), // reserved_account_keys
             self.feature_set
                 .is_active(&agave_feature_set::static_instruction_limit::id()),
@@ -966,9 +965,9 @@ impl Drop for AccountReader<'_> {
 }
 
 struct SnapshotAddressLoader {
-    accounts: Rc<Vec<(Pubkey, Account)>>,
+    accounts: Vec<(Pubkey, Account)>,
     current_slot: Slot,
-    slot_hashes: Rc<SlotHashes>,
+    slot_hashes: SlotHashes,
 }
 
 impl SnapshotAddressLoader {
@@ -985,9 +984,9 @@ impl SnapshotAddressLoader {
             .unwrap_or_default();
         if lookups.is_empty() {
             return Ok(Self {
-                accounts: Rc::new(Vec::new()),
+                accounts: Vec::new(),
                 current_slot: slot,
-                slot_hashes: Rc::new(SlotHashes::default()),
+                slot_hashes: SlotHashes::default(),
             });
         }
 
@@ -1016,24 +1015,14 @@ impl SnapshotAddressLoader {
         let accounts: Vec<_> = accounts.into_iter().flatten().collect();
 
         Ok(Self {
-            accounts: Rc::new(accounts),
+            accounts,
             current_slot: slot,
-            slot_hashes: Rc::new(slot_hashes),
+            slot_hashes,
         })
     }
 }
 
-impl Clone for SnapshotAddressLoader {
-    fn clone(&self) -> Self {
-        Self {
-            accounts: Rc::clone(&self.accounts),
-            current_slot: self.current_slot,
-            slot_hashes: Rc::clone(&self.slot_hashes),
-        }
-    }
-}
-
-impl AddressLoader for SnapshotAddressLoader {
+impl AddressLoader for &SnapshotAddressLoader {
     fn load_addresses(
         self,
         lookups: &[solana_sdk::message::v0::MessageAddressTableLookup],
