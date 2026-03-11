@@ -12,6 +12,7 @@ use {
         Deserialize,
         de::{self, Deserializer},
     },
+    solana_rpc_client::api::request::MAX_MULTIPLE_ACCOUNTS,
     std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration},
 };
 
@@ -189,6 +190,8 @@ pub struct ConfigRpc {
     /// Max body size limit in bytes
     #[serde(deserialize_with = "ConfigRpc::deserialize_humansize_usize")]
     pub body_limit: usize,
+    /// Max requested accounts in getMultipleAccounts
+    pub max_multiple_accounts: usize,
     /// Extra headers added to response
     #[serde(deserialize_with = "ConfigRpc::deserialize_extra_headers")]
     pub extra_headers: HeaderMap,
@@ -205,6 +208,7 @@ impl Default for ConfigRpc {
             endpoint: SocketAddr::from(([127, 0, 0, 1], 9000)),
             tokio: Default::default(),
             body_limit: 10 * 1024,
+            max_multiple_accounts: MAX_MULTIPLE_ACCOUNTS,
             extra_headers: Default::default(),
             request_timeout: Duration::from_secs(60),
             agave_feature_enable_static_instruction_limit: false,

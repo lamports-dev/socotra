@@ -53,6 +53,7 @@ use {
 pub struct State {
     reader: Reader,
     agave_feature_enable_static_instruction_limit: bool,
+    max_multiple_accounts: usize,
 }
 
 pub fn create_request_processor(
@@ -65,6 +66,7 @@ pub fn create_request_processor(
             reader,
             agave_feature_enable_static_instruction_limit: config
                 .agave_feature_enable_static_instruction_limit,
+            max_multiple_accounts: config.max_multiple_accounts,
         }),
         config.extra_headers,
     );
@@ -321,6 +323,18 @@ impl RpcRequestHandler for RpcRequestMultipleAccounts {
         } else {
             (request.id, Default::default())
         };
+        if pubkey_strs.len() > state.max_multiple_accounts {
+            return Err(jsonrpc_response_error(
+                id,
+                jsonrpc_error_invalid_params::<()>(
+                    format!(
+                        "Too many inputs provided; max {}",
+                        state.max_multiple_accounts
+                    ),
+                    None,
+                ),
+            ));
+        }
         let pubkeys = match pubkey_strs
             .into_iter()
             .map(|pubkey_str| verify_pubkey(&pubkey_str))
