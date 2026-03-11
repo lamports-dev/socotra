@@ -640,19 +640,17 @@ impl Rocksdb {
 
         reader.svm_load_sysvars(&mut svm, state, commitment)?;
 
+        // Load ALT
+        for (pubkey, account) in address_loader.accounts {
+            svm.set_account(pubkey, account)
+                .map_err(AccountReaderError::from)?;
+        }
+
         // TODO: use get_multi
         // Load all accounts referenced by the transaction
         let account_keys: Vec<Pubkey> = transaction.account_keys().iter().copied().collect();
         for pubkey in &account_keys {
             reader.load_account(&mut svm, pubkey, state, commitment)?;
-        }
-
-        // TODO: we already loaded
-        // Also load address lookup table accounts for v0 transactions
-        if let Some(lookups) = unsanitized_tx.message.address_table_lookups() {
-            for lookup in lookups {
-                reader.load_account(&mut svm, &lookup.account_key, state, commitment)?;
-            }
         }
 
         let (result, logs, units_consumed, return_data, inner_instructions, fee, post_accounts) =
