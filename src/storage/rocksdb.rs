@@ -8,7 +8,7 @@ use {
     ahash::HashMap,
     anyhow::Context,
     bytes::Buf,
-    litesvm::LiteSVM,
+    litesvm::{LiteSVM, error::LiteSVMError},
     metrics::{counter, gauge},
     prost::encoding::{decode_varint, encode_varint},
     rocksdb::{
@@ -639,7 +639,7 @@ impl Rocksdb {
             .with_blockhash_check(false)
             .with_transaction_history(0);
 
-        reader.load_sysvars(&mut svm, state, commitment)?;
+        reader.svm_load_sysvars(&mut svm, state, commitment)?;
 
         // TODO: use get_multi
         // Load all accounts referenced by the transaction
@@ -739,10 +739,12 @@ pub enum AccountReaderError {
     Rocksdb(#[from] rocksdb::Error),
     #[error("decode: {0}")]
     Decode(#[from] prost::DecodeError),
-    #[error("sysvar not found")]
-    SysvarNotFound,
+    #[error("sysvar not found: {0}")]
+    SysvarNotFound(Pubkey),
     #[error("bincode deserialize: {0}")]
     BincodeDeserialize(#[from] bincode::Error),
+    #[error("svm set account: {0}")]
+    SvmSetAccount(#[from] LiteSVMError),
 }
 
 struct AccountReader<'a> {
@@ -787,18 +789,18 @@ impl<'a> AccountReader<'a> {
                 });
                 account
                     .map(|a| (**a).clone())
-                    .ok_or(AccountReaderError::SysvarNotFound)
+                    .ok_or(AccountReaderError::SysvarNotFound(*pubkey))
             }
             CommitmentLevel::Confirmed => state
                 .confirmed_map
                 .get(pubkey)
                 .map(|a| (**a).clone())
-                .ok_or(AccountReaderError::SysvarNotFound),
+                .ok_or(AccountReaderError::SysvarNotFound(*pubkey)),
             CommitmentLevel::Finalized => self
                 .get_multi(std::iter::once(pubkey))
                 .next()
                 .unwrap_or(Ok(None))?
-                .ok_or(AccountReaderError::SysvarNotFound),
+                .ok_or(AccountReaderError::SysvarNotFound(*pubkey)),
         }?;
         bincode::deserialize(&account.data).map_err(AccountReaderError::BincodeDeserialize)
     }
@@ -828,40 +830,80 @@ impl<'a> AccountReader<'a> {
         })
     }
 
-    // TODO: load from map (same as get_sysvar) + properly use get_multi
-    fn load_sysvars(
+    fn svm_load_sysvars(
         &mut self,
         svm: &mut LiteSVM,
         state: &ReaderState,
         commitment: CommitmentLevel,
     ) -> Result<(), AccountReaderError> {
-        let sysvar_ids = [
+        // Slot-changing sysvars need get_sysvar-style commitment logic.
+        let slot_changing = [
             sysvar::clock::id(),
+            sysvar::slot_hashes::id(),
+            sysvar::slot_history::id(),
+            sysvar::recent_blockhashes::id(),
+        ];
+        // Other sysvars use normal get_account logic.
+        let other = [
             sysvar::rent::id(),
             sysvar::epoch_schedule::id(),
-            sysvar::slot_hashes::id(),
             sysvar::stake_history::id(),
             sysvar::fees::id(),
             sysvar::epoch_rewards::id(),
             sysvar::last_restart_slot::id(),
-            sysvar::recent_blockhashes::id(),
-            sysvar::slot_history::id(),
         ];
 
-        for pubkey in &sysvar_ids {
-            let account = if let Some(acct) = state.get_account(pubkey, commitment) {
-                (*acct).clone()
-            } else if let Some(acct) = self
-                .get_multi(std::iter::once(pubkey))
-                .next()
-                .transpose()?
-                .flatten()
-            {
-                acct
+        let mut resolved: Vec<(Pubkey, Account)> =
+            Vec::with_capacity(slot_changing.len() + other.len());
+        let mut db_needed: Vec<Pubkey> = Vec::new();
+
+        // Resolve slot-changing sysvars from maps using strict commitment logic.
+        for pubkey in &slot_changing {
+            match commitment {
+                CommitmentLevel::Processed => {
+                    let account = state.processed_map.get(pubkey).or_else(|| {
+                        (state.processed_height == state.confirmed_height)
+                            .then(|| state.confirmed_map.get(pubkey))
+                            .flatten()
+                    });
+                    let account = account
+                        .map(|a| (**a).clone())
+                        .ok_or(AccountReaderError::SysvarNotFound(*pubkey))?;
+                    resolved.push((*pubkey, account));
+                }
+                CommitmentLevel::Confirmed => {
+                    let account = state
+                        .confirmed_map
+                        .get(pubkey)
+                        .map(|a| (**a).clone())
+                        .ok_or(AccountReaderError::SysvarNotFound(*pubkey))?;
+                    resolved.push((*pubkey, account));
+                }
+                CommitmentLevel::Finalized => {
+                    db_needed.push(*pubkey);
+                }
+            }
+        }
+
+        // Resolve other sysvars from maps, fall back to db.
+        for pubkey in &other {
+            if let Some(acct) = state.get_account(pubkey, commitment) {
+                resolved.push((*pubkey, (*acct).clone()));
             } else {
-                continue; // sysvar not found, skip (some are optional)
-            };
-            svm.set_account(*pubkey, account).ok();
+                db_needed.push(*pubkey);
+            }
+        }
+
+        // Single batched db read for all unresolved sysvars.
+        if !db_needed.is_empty() {
+            for (result, pubkey) in self.get_multi(db_needed.iter()).zip(db_needed.into_iter()) {
+                let account = result?.ok_or(AccountReaderError::SysvarNotFound(pubkey))?;
+                resolved.push((pubkey, account));
+            }
+        }
+
+        for (pubkey, account) in resolved {
+            svm.set_account(pubkey, account)?;
         }
         Ok(())
     }
