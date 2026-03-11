@@ -1,4 +1,5 @@
 use {
+    agave_feature_set::FeatureSet,
     ahash::HashMap,
     human_size::Size,
     hyper::{
@@ -13,6 +14,7 @@ use {
         de::{self, Deserializer},
     },
     solana_rpc_client::api::request::MAX_MULTIPLE_ACCOUNTS,
+    solana_sdk::pubkey::Pubkey,
     std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration},
 };
 
@@ -24,6 +26,7 @@ pub struct Config {
     pub source: ConfigSource,
     pub storage: ConfigStorage,
     pub rpc: ConfigRpc,
+    pub feature_set: ConfigFeatureSet,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -198,8 +201,6 @@ pub struct ConfigRpc {
     /// Request timeout
     #[serde(with = "humantime_serde")]
     pub request_timeout: Duration,
-    /// Enable static instruction limit (agave feature)
-    pub agave_feature_enable_static_instruction_limit: bool,
 }
 
 impl Default for ConfigRpc {
@@ -211,7 +212,6 @@ impl Default for ConfigRpc {
             max_multiple_accounts: MAX_MULTIPLE_ACCOUNTS,
             extra_headers: Default::default(),
             request_timeout: Duration::from_secs(60),
-            agave_feature_enable_static_instruction_limit: false,
         }
     }
 }
@@ -249,5 +249,25 @@ impl ConfigRpc {
             );
         }
         Ok(map)
+    }
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ConfigFeatureSet {
+    pub inactive: Vec<String>,
+    pub active: Vec<String>,
+}
+
+impl ConfigFeatureSet {
+    pub fn to_feature_set(&self) -> anyhow::Result<FeatureSet> {
+        let mut fs = FeatureSet::default();
+        for pubkey in &self.active {
+            fs.activate(&Pubkey::from_str(pubkey)?, 0);
+        }
+        for pubkey in &self.inactive {
+            fs.deactivate(&Pubkey::from_str(pubkey)?);
+        }
+        Ok(fs)
     }
 }

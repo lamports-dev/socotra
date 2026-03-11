@@ -55,7 +55,6 @@ enum ReadRequest {
         enable_cpi_recording: bool,
         commitment: CommitmentLevel,
         min_context_slot: Option<Slot>,
-        agave_feature_enable_static_instruction_limit: bool,
         tx: oneshot::Sender<ReadResultSimulateTransaction>,
     },
 }
@@ -389,7 +388,6 @@ impl Reader {
                             enable_cpi_recording,
                             commitment,
                             min_context_slot,
-                            agave_feature_enable_static_instruction_limit,
                             tx,
                         },
                     ) => {
@@ -427,7 +425,6 @@ impl Reader {
                                     commitment,
                                     slot,
                                     x_subscription_id,
-                                    agave_feature_enable_static_instruction_limit,
                                 ) {
                                     Ok(result) => ReadResultSimulateTransaction::Success(result),
                                     Err(error) => error.into(),
@@ -521,7 +518,6 @@ impl Reader {
         enable_cpi_recording: bool,
         commitment: CommitmentLevel,
         min_context_slot: Option<Slot>,
-        agave_feature_enable_static_instruction_limit: bool,
     ) -> ReadResultSimulateTransaction {
         let (tx, rx) = oneshot::channel();
         match self.req_tx.try_send(ReadRequest::SimulateTransaction {
@@ -535,7 +531,6 @@ impl Reader {
             enable_cpi_recording,
             commitment,
             min_context_slot,
-            agave_feature_enable_static_instruction_limit,
             tx,
         }) {
             Ok(()) => {}

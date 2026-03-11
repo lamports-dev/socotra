@@ -224,12 +224,14 @@ pub struct Rocksdb {
     db: Arc<DB>,
     path: PathBuf,
     accounts_compression: DBCompressionType,
+    feature_set: FeatureSet,
 }
 
 impl Rocksdb {
     pub fn open(
         path: PathBuf,
         compression: ConfigStorageRocksdbCompression,
+        feature_set: FeatureSet,
     ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&path)
             .with_context(|| format!("failed to create db directory: {:?}", path))?;
@@ -248,6 +250,7 @@ impl Rocksdb {
             db,
             path,
             accounts_compression,
+            feature_set,
         })
     }
 
@@ -552,7 +555,6 @@ impl Rocksdb {
         commitment: CommitmentLevel,
         mut slot: Slot,
         x_subscription_id: Arc<str>,
-        agave_feature_enable_static_instruction_limit: bool,
     ) -> Result<GetSimulateTransactionData, GetSimulateTransactionDataError> {
         let snapshot = self.db.snapshot();
 
@@ -602,7 +604,8 @@ impl Rocksdb {
             None,
             address_loader,
             &Default::default(), // reserved_account_keys
-            agave_feature_enable_static_instruction_limit,
+            self.feature_set
+                .is_active(&agave_feature_set::static_instruction_limit::id()),
         )
         .map_err(|err| {
             GetSimulateTransactionDataError::InvalidParams(format!("invalid transaction: {err}"))
@@ -630,7 +633,7 @@ impl Rocksdb {
 
         // Create LiteSVM and load state
         let mut svm = LiteSVM::default()
-            .with_feature_set(FeatureSet::all_enabled()) // TODO
+            .with_feature_set(self.feature_set.clone())
             .with_builtins()
             .with_sigverify(false)
             .with_blockhash_check(false)

@@ -52,7 +52,6 @@ use {
 #[derive(Debug)]
 pub struct State {
     reader: Reader,
-    agave_feature_enable_static_instruction_limit: bool,
     max_multiple_accounts: usize,
 }
 
@@ -64,8 +63,6 @@ pub fn create_request_processor(
         config.body_limit,
         Arc::new(State {
             reader,
-            agave_feature_enable_static_instruction_limit: config
-                .agave_feature_enable_static_instruction_limit,
             max_multiple_accounts: config.max_multiple_accounts,
         }),
         config.extra_headers,
@@ -621,7 +618,6 @@ impl RpcRequestHandler for RpcRequestSimulateTransaction {
                 self.enable_cpi_recording,
                 self.commitment,
                 self.min_context_slot,
-                self.state.agave_feature_enable_static_instruction_limit,
             )
             .await
         {
