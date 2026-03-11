@@ -646,12 +646,9 @@ impl Rocksdb {
                 .map_err(AccountReaderError::from)?;
         }
 
-        // TODO: use get_multi
         // Load all accounts referenced by the transaction
         let account_keys: Vec<Pubkey> = transaction.account_keys().iter().copied().collect();
-        for pubkey in &account_keys {
-            reader.load_account(&mut svm, pubkey, state, commitment)?;
-        }
+        reader.svm_load_accounts(&mut svm, &account_keys, state, commitment)?;
 
         let (result, logs, units_consumed, return_data, inner_instructions, fee, post_accounts) =
             match svm.simulate_transaction(unsanitized_tx) {
@@ -902,51 +899,72 @@ impl<'a> AccountReader<'a> {
         for (pubkey, account) in resolved {
             svm.set_account(pubkey, account)?;
         }
+
         Ok(())
     }
 
-    fn load_account(
+    fn svm_load_accounts(
         &mut self,
         svm: &mut LiteSVM,
-        pubkey: &Pubkey,
+        pubkeys: &[Pubkey],
         state: &ReaderState,
         commitment: CommitmentLevel,
     ) -> Result<(), AccountReaderError> {
-        let account = if let Some(acct) = state.get_account(pubkey, commitment) {
-            (*acct).clone()
-        } else if let Some(acct) = self
-            .get_multi(std::iter::once(pubkey))
-            .next()
-            .transpose()?
-            .flatten()
-        {
-            acct
-        } else {
-            return Ok(());
-        };
-
-        // If executable and owned by BPF loader upgradeable, also load programdata
-        if account.executable
-            && account.owner == bpf_loader_upgradeable::id()
-            && let Ok(UpgradeableLoaderState::Program {
-                programdata_address,
-            }) = bincode::deserialize(&account.data)
-        {
-            // Load the programdata account
-            let pd = if let Some(acct) = state.get_account(&programdata_address, commitment) {
-                Some((*acct).clone())
+        // Partition keys into cached vs db-needed
+        let mut resolved: Vec<(Pubkey, Account)> = Vec::new();
+        let mut db_needed: Vec<Pubkey> = Vec::new();
+        for pubkey in pubkeys {
+            if let Some(acct) = state.get_account(pubkey, commitment) {
+                resolved.push((*pubkey, (*acct).clone()));
             } else {
-                self.get_multi(std::iter::once(&programdata_address))
-                    .next()
-                    .transpose()?
-                    .flatten()
-            };
-            if let Some(pd_account) = pd {
-                svm.set_account(programdata_address, pd_account).ok();
+                db_needed.push(*pubkey);
             }
         }
 
-        svm.set_account(*pubkey, account).ok();
+        // Batch load from DB
+        for (pubkey, result) in db_needed.iter().zip(self.get_multi(db_needed.iter())) {
+            if let Some(account) = result? {
+                resolved.push((*pubkey, account));
+            }
+        }
+
+        // Identify BPF upgradeable programdata addresses
+        let mut programdata_keys: Vec<Pubkey> = Vec::new();
+        for (_, account) in &resolved {
+            if account.executable && account.owner == bpf_loader_upgradeable::id() {
+                let UpgradeableLoaderState::Program {
+                    programdata_address,
+                } = bincode::deserialize::<UpgradeableLoaderState>(&account.data)?
+                else {
+                    continue;
+                };
+                programdata_keys.push(programdata_address);
+            }
+        }
+
+        // Batch load programdata: partition into cached vs db-needed
+        let mut pd_db_needed: Vec<Pubkey> = Vec::new();
+        for pubkey in &programdata_keys {
+            if let Some(acct) = state.get_account(pubkey, commitment) {
+                resolved.push((*pubkey, (*acct).clone()));
+            } else {
+                pd_db_needed.push(*pubkey);
+            }
+        }
+        for (result, pubkey) in self
+            .get_multi(pd_db_needed.iter())
+            .zip(pd_db_needed.into_iter())
+        {
+            if let Some(account) = result? {
+                resolved.push((pubkey, account));
+            }
+        }
+
+        // Set all accounts on SVM
+        for (pubkey, account) in resolved {
+            svm.set_account(pubkey, account)?;
+        }
+
         Ok(())
     }
 }
