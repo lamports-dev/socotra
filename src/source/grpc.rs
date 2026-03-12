@@ -10,7 +10,7 @@ use {
         SubscribeRequestFilterAccounts, SubscribeRequestFilterBlocksMeta,
         SubscribeRequestFilterSlots, subscribe_update::UpdateOneof,
     },
-    solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
+    solana_sdk::{account::Account, clock::Slot, hash::Hash, pubkey::Pubkey},
     std::{
         collections::{BTreeMap, hash_map::Entry as HashMapEntry},
         sync::Arc,
@@ -34,6 +34,7 @@ pub enum GeyserMessage {
     Block {
         slot: Slot,
         height: Slot,
+        blockhash: Hash,
         accounts: HashMap<Pubkey, Arc<Account>>,
     },
     // Created when account update received after BlockMeta
@@ -175,6 +176,11 @@ pub async fn subscribe(
                         continue;
                     };
 
+                    let Ok(blockhash) = update.blockhash.parse::<Hash>() else {
+                        error!(slot = update.slot, "invalid blockhash on block meta");
+                        break;
+                    };
+
                     let slot_info = slots.entry(update.slot).or_default();
                     if slot_info.height.is_some() {
                         continue;
@@ -184,6 +190,7 @@ pub async fn subscribe(
                     GeyserMessage::Block {
                         slot: update.slot,
                         height,
+                        blockhash,
                         accounts: slot_info
                             .accounts
                             .iter()

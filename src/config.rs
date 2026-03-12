@@ -1,4 +1,5 @@
 use {
+    agave_feature_set::FeatureSet,
     ahash::HashMap,
     human_size::Size,
     hyper::{
@@ -12,6 +13,8 @@ use {
         Deserialize,
         de::{self, Deserializer},
     },
+    solana_rpc_client::api::request::MAX_MULTIPLE_ACCOUNTS,
+    solana_sdk::pubkey::Pubkey,
     std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration},
 };
 
@@ -23,6 +26,7 @@ pub struct Config {
     pub source: ConfigSource,
     pub storage: ConfigStorage,
     pub rpc: ConfigRpc,
+    pub feature_set: ConfigFeatureSet,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -189,6 +193,8 @@ pub struct ConfigRpc {
     /// Max body size limit in bytes
     #[serde(deserialize_with = "ConfigRpc::deserialize_humansize_usize")]
     pub body_limit: usize,
+    /// Max requested accounts in getMultipleAccounts
+    pub max_multiple_accounts: usize,
     /// Extra headers added to response
     #[serde(deserialize_with = "ConfigRpc::deserialize_extra_headers")]
     pub extra_headers: HeaderMap,
@@ -203,6 +209,7 @@ impl Default for ConfigRpc {
             endpoint: SocketAddr::from(([127, 0, 0, 1], 9000)),
             tokio: Default::default(),
             body_limit: 10 * 1024,
+            max_multiple_accounts: MAX_MULTIPLE_ACCOUNTS,
             extra_headers: Default::default(),
             request_timeout: Duration::from_secs(60),
         }
@@ -242,5 +249,25 @@ impl ConfigRpc {
             );
         }
         Ok(map)
+    }
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ConfigFeatureSet {
+    pub inactive: Vec<String>,
+    pub active: Vec<String>,
+}
+
+impl ConfigFeatureSet {
+    pub fn to_feature_set(&self) -> anyhow::Result<FeatureSet> {
+        let mut fs = FeatureSet::default();
+        for pubkey in &self.active {
+            fs.activate(&Pubkey::from_str(pubkey)?, 0);
+        }
+        for pubkey in &self.inactive {
+            fs.deactivate(&Pubkey::from_str(pubkey)?);
+        }
+        Ok(fs)
     }
 }

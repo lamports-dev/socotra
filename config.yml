@@ -50,8 +50,263 @@ rpc:
     worker_threads: null # Number of threads in Tokio runtime, by default all available cores
     affinity: null # Pin threads to specified CPUs, optional
   body_limit: 10KiB # JSON-RPC body limit
+  max_multiple_accounts: 100 # Max requested accounts in getMultipleAccounts
   extra_headers: # Extra headers added to response
     # access-control-allow-origin: "*"
     # access-control-max-age: 86400
     # access-control-allow-methods: OPTIONS, POST
   request_timeout: 60s # Max time to process a single JSON-RPC request
+feature_set: # agave v3.1.8 / feature set: 1620780344
+  inactive:
+    - 2aQJYqER2aKyb3cZw22v4SL2xMX7vwXBRWfvS4pTrtED # SIMD-0167: Enable Loader-v4
+    - 2oMRZEDWT2tqtYMofhmmfQ8SsjqUFzT6sYXppQDavxwz # Enable ExtendProgramChecked instruction
+    - 4WeHX6QoXCCwqbSFgi6dxnB6QsPo6YApaNTH7P4MLQ99 # SIMD-0083: Allow batched transactions to read/write and write/write the same accounts
+    - 51VCKU5eV6mcTc9q9ArfWELU2CqDoi13hdAjr6fHMdtv # Verify retransmitter signature #1840
+    - 5TuppMutoyzhUSfuYdhgzD47F92GL1g89KpCZQKqedxP # enable the remaining_compute_units syscall
+    - 5xXZc66h4UdB6Yq7FzdBxBiRAFMMScMLwHxk2QZDaNZL # SIMD-0321: Provide instruction data offset in VM r2
+    - 6TkHkRmP7JZy1fdM6fg5uXn76wChQBWGokHBJzrLB3mj # SIMD-0268: Raise CPI nesting limit from 4 to 8
+    - 6f2qai82RU7Dutj1WJfRzLJKYA36QWvTa89CR1imgj7N # enable account data direct mapping
+    - 8MhfKhoZEoiySpVe248bDkisyEcBA7JQLyUS94xoTSqN # SIMD-0337: Markers for Alpenglow Fast Leader Handover, DATA_COMPLETE_SHRED placement rules
+    - 8aXvSuopd1PUj7UhehfXJRg6619RHp8ZvwTyyJHdUYsj # fail libsecp256k1_verify if count appears wrong
+    - 9LZdXeKGeBV6hRLdxS1rHbHoEUsKqesCC2ZAPTPKJAbK # increase tx account lock limit to 128 #27241
+    - 9onWzzvCzNC2jfhxxeqRgs5q7nFAAKpCUvkj6T6GJK9i # Raise minimum stake delegation to 1.0 SOL #24357
+    - BUwGLeF3Lxyfv1J1wY8biFHBB2hrk2QhbNftQf3VV3cC # SIMD-0178, SIMD-0179 and SIMD-0189: Enable deployment and execution of SBPFv3 programs
+    - CHaChatUnR3s6cPyPMMGNJa3VdQQ8PNH2JqdD4LpCKnB # SIMD-0332: Reduce ChaCha rounds for Turbine from 20 to 8
+    - DT4n6ABDqs6w4bnfwrXT9rsprcPf6cdDga1egctaPkLC # full inflation on devnet and testnet
+    - EBq48m8irRKuE7ZnMTLvLg2UuGSqhe8s8oMqnmja1fJw # add big_mod_exp syscall #28503
+    - EaQpmC6GtRssaZ3PCUM5YksGqUdMLeZ46BQXYtHYakDS # include transaction loaded accounts data size in base fee calculation #30657
+    - Eoh7e1sDqtyPtuiWAhBNSJinvtJWTTDgeUMRi3RF8zWS # SIMD-0219: Stricter ABI and Runtime Constraints
+    - G6ANXD6ptCSyNd9znZm7j4dEczAJCfx7Cy43oBx3rKHJ # stakes must be at least the minimum delegation to earn rewards
+    - Gx4XFcrVMt4HUvPzTpTSVkdDVgcDSjKhDN1RqRS6KDuZ # SIMD-0185: Vote State v4
+    - HTW2pSyErTj4BV6KBM9NZ9VBUJVxt7sacNWcf76wtzb3 # blake3 syscall
+    - P1BCUMpAC7V2GRBRiJCNUgpMyWZhoqt3LKo712ePqsz  # SIMD-0286: Raise block limit to 100M
+    - RfEcA95xnhuwooVAhUUksEJLZBF7xKCLuqrJoqk4Zph  # vote only on retransmitter signed fec sets
+    - TestFeature11111111111111111111111111111111  # SIMD-0161: Disables execution of SBPFv0 programs
+    - TestFeature21111111111111111111111111111111  # Re-enables execution of SBPFv0 programs
+    - bnYzodLwmybj7e1HAe98yZrdJTd7we69eMMLgCXqKZm  # SIMD-0334: Fix alt_bn128_pairing length check
+    - chaie9S2zVfuxJKNRGkyTDokLwWxx6kD2ZLsqQHaDD8  # generate duplicate proofs for chained merkle root conflicts
+    - depVvnQ2UysGrhwdiwU42tCadZL8GcBb1i2GYhMopQv  # Deprecate legacy vote instructions
+    - mustRekeyVm2QHYB3JPefBiU4BY3Z6JkW2k3Scw5GWP  # SIMD-0326: Alpenglow: new consensus algorithm
+    - poUdAqRXXsNmfqAZ6UqpjbeYgwBygbfQLEvWSqVhSnb  # SIMD-0359: Enforce padding in Poseidon hash inputs
+    - ptokFjwyJtrwCa9Kgo9xoDS59V4QccBGEaRFnRPnSdP  # SIMD-0266: Efficient Token program
+    - rent6iVy6PDoViPBeJ6k5EJQrkj62h7DPyLbWGHwjrC  # SIMD-0194: Deprecate rent exemption threshold
+    - rexav5eNTUSNT1K2N7cfRjnthwhcP5BC25v2tA4rW4h  # SIMD-0444: Relax program data account check in migration
+    - sProgVaNWkYdP2eTRAy1CPrgb3b9p8yXCASrPEqo6VJ  # SIMD-0204: Slashable event verification
+    - turbRpTzBzDU6PJmWvRTbcJXXGxUs19CvQamUrRD9bN  # enable turbine extended fanout experiments #
+    - zk1snxsc6Fh3wsGNbbHAJNHiJoYgF29mMnTSusGx5EJ  # enable Zk Token proof program and syscalls
+    - zkNLP7EQALfC1TYeB3biDU7akDckj8iPkvh9y2Mt2K3  # enable Zk Token proof program transfer with fee
+    - zkesAyFB19sTkX8i9ReoKaMNDA4YNTPYJpZKPDt7FMW  # Re-enables zk-elgamal-proof program
+    - zkiTNuzBKxrCLMKehzuQeKZyLtX2yvFcEKMML8nExU8  # Enable zk token proof program to read proof from accounts instead of instruction data #34750
+  active:
+    - E3PHP7w8kB7np3CTQ1qQ2tW3KCtjRSXBQgW9vM2mWv2Y # from slot 41040000 (epoch 95)   | secp256k1 program
+    - E5JiFDQCwyC6QfT9REFyMpfK2mHcmv1GUDySU1Ue7TYv # from slot 41040000 (epoch 95)   | spl-token multisig fix
+    - 4kpdyrcj5jS47CZb2oJGfVxjYbsMm2Kx97gFyZrxxwXz # from slot 51408000 (epoch 119)  | no overflow rent distribution
+    - GaBtBJvmS4Arjj5W1NmFcyvPjsHN38UGYDq2MDwbs9Qu # from slot 55728001 (epoch 129)  | deprecate unused rewards sysvar
+    - 4RWNif6C2WCNiKVW7otP4G7dkmkHGyKQWRpuZ1pxKU5m # from slot 57456000 (epoch 133)  | pico inflation
+    - GE7fRxmW46K6EmCD9AMZSbnaJ2e3LfqCZzdHi9hmYAgi # from slot 57888004 (epoch 134)  | filter stake_delegation_accounts #14062
+    - 7XRJcS5Ud5vxGB54JbK9N2vBZVwnwdBNeJW1ibRgD9gx # from slot 64800004 (epoch 150)  | full inflation enabled by Certus One
+    - BzBBveUDymEYoYzcMWNQCx3cd4jQs7puaVFHLtsbB6fm # from slot 64800004 (epoch 150)  | community vote allowing Certus One to enable full inflation
+    - BL99GYhdjjcv6ys22C9wPgn2aTVERDbPHHo4NbS3hgp7 # from slot 66528004 (epoch 154)  | spl-token self-transfer fix
+    - GvDsGDkH5gyzwpDhxNixx8vtx1kwYHH13RiNAPw27zXb # from slot 66528004 (epoch 154)  | warp timestamp again, adjust bounding to 25% fast 80% slow #15204
+    - 3ccR6QpxGYsAbWyfevEtBNGfWV4xBffxRj2tD6A9i39F # from slot 68688000 (epoch 159)  | check initialized Vote data
+    - D4jsDcXaqdW8tDAWn8H4R25Cdns2YwLneujSL1zvjW6R # from slot 71712000 (epoch 166)  | require custodian to authorize withdrawer change for locked stake
+    - BcWknVcgvonN8sL4HE4XFuEVgfcee5MwxWPAgP6ZV89X # from slot 92448000 (epoch 214)  | vote/state program checked instructions #18345
+    - BrTR9hzw4WBGFP65AJMbpAo64DcA3U6jdPSga9fMV5cS # from slot 93312000 (epoch 216)  | perform all checks for transfers of 0 lamports
+    - FToKNBYyiF4ky9s8WsmLBXHCht17Ek7RXaLZGHzzQhJ1 # from slot 93312000 (epoch 216)  | spl-token set_authority fix
+    - 3E3jV7v9VcdJL8iYZUMax9DiDno8j7EWUVbhm9RtShj2 # from slot 100656000 (epoch 233) | demote program write locks to readonly, except when upgradeable loader present #19593 #20265
+    - C5fh68nJ7uyKAuYZg2x9sEQ5YrVf3dkW6oojNBSc3Jvo # from slot 101088000 (epoch 234) | send votes to the tpu vote port
+    - EBeznQDjcPG8491sFsKZYBi5S5jTVXMpAKNDJMQPS2kq # from slot 102816004 (epoch 238) | reduce required payer balance for program deploys
+    - EVW9B5xD9FFK7vw1SBARwMA4s5eRo5eKJdKpsBikzKBz # from slot 102816004 (epoch 238) | prohibit extra transaction signatures
+    - SAdVFw3RZvzbo6DvySbSdBnHN4gkzSTH9dSxesyKKPj  # from slot 104112000 (epoch 241) | Enable advancing credits observed for activation epoch #19309
+    - meRgp4ArRPhD3KtCY9c5yAf2med7mBLsjKTPeVUHqBL  # from slot 104112000 (epoch 241) | allow merging active stakes with unmatched credits_observed #18985
+    - 6RvdSWHh8oh72Dp7wMTS2DBkf3fRPtChfNrAo3cZZoXJ # from slot 104976000 (epoch 243) | secp256k1_recover syscall
+    - BKCPBQQBZqggVnFso5nQ8rQ4RwwogYwjuUt9biBjxwNF # from slot 104976000 (epoch 243) | collect rent from accounts owned by sysvars
+    - 265hPS8k8xJ37ot82KEgjRunsUp5w4n4Q4VwwiN9i9ps # from slot 109728000 (epoch 254) | optimize epoch boundary updates
+    - 8kEuAshXLsgkUEdcFVLqrjCGGHVWFW99ZZpxvAzzMtBp # from slot 110592000 (epoch 256) | dedupe config program signers
+    - DhsYfRjxfnh2g7HKJYSzT79r74Afa1wbHkAgHndrA1oy # from slot 110592000 (epoch 256) | upgrade libsecp256k1 to v0.5.0
+    - HFpdDDNQjvcXnXKec697HDDsyk6tFoWS2o8fkxuhQZpL # from slot 110592000 (epoch 256) | remove delegations from stakes cache when inactive
+    - 4d5AKtxoh93Dwm1vHXUU3iRATuMndx1c431KgT2td52r # from slot 117072004 (epoch 271) | Add compute_budget_program
+    - 7txXZZD6Um59YoLMF7XUNimbMjsqsWhc7g2EniiTrmp1 # from slot 117072004 (epoch 271) | fail vote withdraw instructions which leave the account non-rent-exempt
+    - EMX9Q7TVFAmQ9V1CggAkhMzhXSg8ECp7fHrWQX2G1chf # from slot 117072004 (epoch 271) | evict invalid stakes cache entries on epoch boundaries
+    - Ftok2jhqAqxUWEiCVRrfRs9DPppWP8cgTB7NQNKL88mS # from slot 117072004 (epoch 271) | spl-token v3.3.0 release
+    - HTTgmruMYRZEntyL3EdCDdnS6e4D5wRq1FA7kQsb66qq # from slot 117072004 (epoch 271) | remove support for the native loader
+    - 6ppMXNYLhVd7GcsZ5uV11wQEW7spppiMVfqQv5SXhDpX # from slot 117936008 (epoch 273) | enable builtin ed25519 signature verify program
+    - 6uaHcKPGUy4J7emLBgUTeufhJdiwhngW6a1R9B7c2ob9 # from slot 117936008 (epoch 273) | enable sol_log_data syscall
+    - DwScAzPUjuv65TMbDnFY7AgwmotzWy3xpEJMXM3hZFaB # from slot 117936008 (epoch 273) | enable sol_{set,get}_return_data syscall
+    - FaTa4SpiaSNH44PGC4z8bnGVTkSRYaWvrBs3KTu8XQQq # from slot 130464000 (epoch 302) | SPL Associated Token Account Program release version 1.0.4, tied to token 3.3.0 #22648
+    - E8MkiWZNNPGU6n55jkGzyj8ghUmjCHRmDFdYYFYHxWhQ # from slot 133056012 (epoch 308) | leave nonce as is on success
+    - BkFDxiJQWZXGTZaJQxH7wVEHkAmwCgSEVkrvswFfRJPD # from slot 133488000 (epoch 309) | require all new transaction accounts with data to be rent-exempt
+    - 75m6ysz33AfLA5DDEzWM1obBrnPQRSsdVQ2nRmc8Vuu1 # from slot 133920008 (epoch 310) | support account data reallocation
+    - CFK1hRCNy8JJuAAY8Pb2GjLFNdCThS2qwZNe3izzBMgn # from slot 134352008 (epoch 311) | add add_get_processed_sibling_instruction_syscall
+    - 5ekBxc8itEnPv4NzGJtr8BVVQLNMQuLMNQQj7pHoLNZ9 # from slot 135216004 (epoch 313) | transaction wide compute cap
+    - CCu4boMmfLuqcmfTLPHQiUo22ZdUsXjgzPAURYaWt1Bw # from slot 135216004 (epoch 313) | Requestable heap frame size
+    - 3BX6SBeEBibHaVQXywdkcgyUk6evfYZkHdztXiDtEpFS # from slot 136512012 (epoch 316) | warp timestamp again, adjust bounding to 150% slow #25666
+    - BiCU7M5w8ZCMykVSyhZ7Q3m2SWoR2qrEQ86ERcDX77ME # from slot 136944004 (epoch 317) | nonce must be writable
+    - 9kdtFSrXHQg3hKkbXkQ6trJ3Ja1xpJ22CTFSNAciEwmL # from slot 137376016 (epoch 318) | fail instructions which have native_loader as program_id directly
+    - Ds87KVeqhbv7Jw8W6avsS1mqz3Mw5J3pRTpPoDQ2QdiJ # from slot 137376016 (epoch 318) | add shred-type to shred seed #25556
+    - 36PRUK2Dz6HWYdG9SpjeAsF5F3KxnFCakA2BZMbtMhSb # from slot 137808012 (epoch 319) | use correct check for nonoverlapping regions in memcpy syscall
+    - 3u3Er5Vc2jVcwz4xr2GJeSAXT3fAj6ADHZ4BJMZiScFd # from slot 138240000 (epoch 320) | durable nonces must be advanceable
+    - 4EJQtF2pkRyawwcTVfQutzq4Sa5hRhibF6QAK1QXhtEX # from slot 138240000 (epoch 320) | enable durable nonce #25744
+    - Gea3ZkK2N4pHuVZVxWcnAtS6UEDdyumdYt4pFcKjA3ar # from slot 138240000 (epoch 320) | separate durable nonce and blockhash domains #25744
+    - HxrEu1gXuH7iD3Puua1ohd5n4iUKJyFNtNxk9DVJkvgr # from slot 138240000 (epoch 320) | nonce must be authorized
+    - 2h63t332mGCCsWK2nqqqHhN4U9ayyqhLVFvczznHDoTZ # from slot 138672000 (epoch 321) | update syscall base costs
+    - AVZS3ZsN4gi6Rkx2QUibYuSJG3S6QHib7xCYhG6vGJxU # from slot 138672000 (epoch 321) | vote account withdraw authority may change the authorized voter #22521
+    - 3XgNukcZWf9o3HdA3fpJbm94XFc4qpvTXc8h1wxYwiPi # from slot 139104000 (epoch 322) | disable ldabs* and ldind* SBF instructions
+    - 4yuaYAj2jGMGTh1sSmi4G2eFscsDq8qjugJXZoBN6YEa # from slot 139104000 (epoch 322) | disable reporting of unresolved SBF symbols at runtime
+    - 7GUcYgq4tVtaqNCKT3dho9r4665Qp5TxCZ27Qgjx3829 # from slot 139536000 (epoch 323) | Executables incur CPI data costs
+    - CBkDroRDqm8HwHe6ak9cguPjUomrASEkfmxEaZ5CNNxz # from slot 140400004 (epoch 325) | enforce max number of locked accounts per transaction
+    - DpJREPyuMZ5nDfU6H3WTqSqUFSXAfw8u7xqmWtEwJDcP # from slot 140400004 (epoch 325) | quick bail on panic
+    - J2QdYx8crLbTVK8nur1jeLsmc3krDbfjoxoea2V1Uy5Q # from slot 141264004 (epoch 327) | Default max tx-wide compute units calculated per instruction
+    - 3aJdcZqxoLpSBxgeYGjPwaYS1zzcByxUDqJkbzWAH1Zb # from slot 141696000 (epoch 328) | move the CPI stack overflow check to the end of push
+    - 98std1NSHqXi9WYvFShfVepRdCoq1qvsp8fsR2XZtG8g # from slot 142128000 (epoch 329) | add compute budget ix for setting a compute unit price
+    - 7g9EUwj4j7CS21Yx1wvgWLjSZeh5aPq8x9kpoPwXM8n8 # from slot 142560008 (epoch 330) | limit secp256k1 recovery id
+    - nWBqjr3gpETbiaVj3CBJ3HFC5TMdnJDGt21hnvSTvVZ  # from slot 142560008 (epoch 330) | check physical overlapping regions
+    - 4ApgRX3ud6p7LNMJmsuaAcZY5HWctGPr5obAsjB3A54d # from slot 143424004 (epoch 332) | prevent calling precompiles as programs
+    - FaTa17gVKoqbh38HcfiQonPsAaQViyDCCSg71AubYZw8 # from slot 144288004 (epoch 334) | SPL Associated Token Account Program version 1.1.0 release #24741
+    - Ftok4njE8b7tDffYkC5bAbCaQv5sL6jispYrprzatUwN # from slot 144288004 (epoch 334) | SPL Token Program version 3.4.0 release #24740
+    - 2jXx2yDmGysmBKfKYNgLj2DQyAQv6mMk2BPh4eSbyB4H # from slot 147744004 (epoch 342) | deprecate fee calculator
+    - 6tRxEYKuy2L5nnv5bgn7iT28MxUbYxp5h7F3Ncf1exrT # from slot 148608004 (epoch 344) | An instruction you can use to change a vote accounts authority when the current authority is a derived key #25860
+    - HyrbKftCdJ5CrUfEti6x26Cj7rZLNe32weugk7tLcWb8 # from slot 150768000 (epoch 349) | syscalls use saturated math
+    - 21AWDosvp3pBamFW91KB35pNoaoZVTM7ess8nr2nt53B # from slot 151632012 (epoch 351) | merge NonceError into SystemError
+    - H3kBSaKdeiUsyHmeHqjJYNc27jesXZ6zWj3zWkowQbkV # from slot 152496000 (epoch 353) | fix owner for instructions sysvar
+    - 8FdwgyHFEjhAdjWfV2vfqk7wA1g9X3fQpKH7SBpEv3kC # from slot 153360000 (epoch 355) | require static program ids in versioned transactions
+    - 2R72wpcQ7qV7aTJWUumdn8u5wmmTyXbK7qzEy7YSAgyY # from slot 154224000 (epoch 357) | include account index in rent tx error #25190
+    - 3KZZ6Ks1885aGBQ45fwRcPXVBCtzUvxhUTkwKMR41Tca # from slot 154656004 (epoch 358) | enable versioned transaction message processing
+    - HH3MUYReL2BvqqA3oEcAa7txju5GY6G4nxJ51zvsEjEZ # from slot 156384000 (epoch 362) | preserve rent epoch for rent exempt accounts #26479
+    - 3gtZPqvPpsbXZVCx6hceMfWxtsmrjMzmg8C7PLKSxS2d # from slot 157680012 (epoch 365) | filter vote slots older than the slot hashes history
+    - 812kqX67odAp5NFwM8D2N24cku7WTm9CHUTFUXaDkWPn # from slot 161136000 (epoch 373) | prevent crediting rent paying accounts #26606
+    - GTUMCZ8LTNxVfxdrw7ZsDFTxXb7TutYkzJnFwinpE6dg # from slot 167184008 (epoch 387) | disable the deprecated BPF loader
+    - ALBk3EWdeAg2WAGf6GPDUf1nynyNqCdEVmgouG7rpuCj # from slot 170640000 (epoch 395) | fail vote account withdraw to 0 unless account earned 0 credits in last completed epoch
+    - Vo5siZ442SaZBKPXNocthiXysNviW4UYPwRFggmbgAp  # from slot 171072012 (epoch 396) | fixes Bank::transaction_count to include all committed transactions, not just successful ones
+    - 3uRVPBpyEJRo1emLCrq38eLRFGcu6uKSpUXqGvU8T7SZ # from slot 174096000 (epoch 403) | check syscall outputs do_not overlap #28600
+    - 437r62HoAdUb63amq3D7ENnBLDhHT2xY8eFkLJYVKK4x # from slot 198720004 (epoch 460) | enable the deactivate delinquent stake instruction #23932
+    - 4Di3y24QFLt5QEUPZtbnjyfQKfm6ZMTfa6Dw1psfoMKU # from slot 199152000 (epoch 461) | drop redundant turbine path
+    - St8k9dVXP97xT6faW24YmRSYConLbhsMJA4TJTBLmMT  # from slot 199584000 (epoch 462) | add GetMinimumDelegation instruction to stake program
+    - sTKz343FM8mqtyGvYWvbLpTThw3ixRM4Xk8QvZ985mw  # from slot 200016004 (epoch 463) | Allow zero-lamport undelegated amount for initialized stakes #24670
+    - BUS12ciZ5gCoFafUHWW8qaFMMtwFQGVxjsDheWLdqBE2 # from slot 200448008 (epoch 464) | Auto rewind stake's credits_observed if (accidental) vote recreation is detected #22546
+    - 54KAoNiUERNoWWUhTWWwXgym94gzoXFVnHyQwPA18V9A # from slot 200880004 (epoch 465) | fail libsecp256k1_verify if count appears wrong
+    - G74BkWBzmsByZ1kxHy44H3wjwp5hp7JbrGRuDpco22tY # from slot 202176000 (epoch 468) | fix root in vote state updates #27361
+    - 74CoWuBmt3rUVUrCb2JiSTvh6nXyBWUsK4SaMj3CtE3T # from slot 202608000 (epoch 469) | cpi ignore serialized_len_ptr #29592
+    - FQnc7U4koHqWgRvFaBJjZnV8VPg6L6wWK33yJeDp4yvV # from slot 203904008 (epoch 472) | stake split instruction uses rent sysvar
+    - CpkdQmspsaZZ8FVAouQTtTWZkc8eeQ7V3uj7dWz543rZ # from slot 204336000 (epoch 473) | on bank load account, do not try to fix up rent_epoch #28541
+    - DTVTkmw3JSofd8CJVJte8PXEbxNQ2yZijvVr3pe2APPj # from slot 204336000 (epoch 473) | on accounts hash calculation, do not try to rehash accounts #28934
+    - 6iyggb5MTcsvdcugX7bEKbHV8c6jdLbpHwkncrgLMhfo # from slot 204768000 (epoch 474) | stop adding hashes for skipped slots to recent blockhashes
+    - 9k5ijzTbYPtjzu8wj2ErH9v45xecHzQ1x4PMYMMxFgdM # from slot 205200004 (epoch 475) | enforce max number of accounts per bpf program instruction #26628
+    - 28s7i3htzhahXQKqmS2ExzbEoUypg9krwvtK2M9UWXh9 # from slot 206064004 (epoch 477) | update rewards from cached accounts
+    - 8sKQrMQoUHtQSUP83SPG4ta2JDjSAiWs7t5aJ9uEd6To # from slot 206496008 (epoch 478) | use default units per instruction in fee calculation #26785
+    - 4UDcAfQ6EcA6bdcadkeHpkarkhZGJ7Bpq7wTAiRMjkoi # from slot 207360004 (epoch 480) | disable builtin loader ownership chains #29956
+    - GmC19j9qLn2RFk5NduX6QXaDhVpGncVVBzyM8e9WMz2F # from slot 207792008 (epoch 481) | check size when translating slices
+    - JAN1trEUEtZjgXYzNBYHU9DYd7GnThhXfFP7SzPXkPsG # from slot 208656004 (epoch 483) | disable fees sysvar
+    - 79HWsX9rpnnJBPcdNURVqygpMAfxdrAirzAGAVmf92im # from slot 209088008 (epoch 484) | disable new deployments of deprecated sol_alloc_free_ syscall
+    - noRuG2kzACwgaY7TVmLRnUNPLKNVQE1fb7X55YWBehp  # from slot 210384016 (epoch 487) | validator commission updates are only allowed in the first half of an epoch #29362
+    - Bj2jmUsM2iRhfdLLDSTkhM5UQRQvQHm57HSmPibPtEyu # from slot 211680000 (epoch 490) | Return InsufficientDelegation instead of InsufficientFunds or InsufficientStake where applicable #31206
+    - 86HpNqzutEZwLcPxS6EHDcMNYWk6ikhteg9un7Y2PBKE # from slot 212112000 (epoch 491) | Compact vote state updates to lower block size
+    - CveezY6FDLVBToHDcvJRmtMouqzsmj4UXYh5ths5G5Uv # from slot 212112000 (epoch 491) | Calculate vote credits for VoteStateUpdate per vote dequeue to match credit awards for Vote instruction
+    - Ff8b1fBeB86q8cjq47ZhsQLgv5EkHu3G1C99zjUfAzrq # from slot 212112000 (epoch 491) | enable direct vote state update
+    - Hr1nUA9b7NJ6eChS26o7Vi8gYYDDwWD3YeBfzJkTbU86 # from slot 217296000 (epoch 503) | Enable transaction to request heap frame using compute budget instruction #30076
+    - 7Vced912WrRnfjaiKRiNBcbuFw7RrnLv3E3z95Y4GTNc # from slot 222048008 (epoch 514) | enable early verification of account modifications #25899
+    - Ffswd3egL3tccB6Rv3XY6oqfdzn913vUcjCSnpvCKpfx # from slot 222480020 (epoch 515) | better error codes for tx lamport check #33353
+    - GQALDaC48fEhZGWRj9iL5Q889emJKcj3aCvHF7VCbbF4 # from slot 224208000 (epoch 519) | limit max instruction trace length #27939
+    - 9gxu85LYRAcZL38We8MYJ4A9AwgBBPtVBAqebMcT1241 # from slot 224640020 (epoch 520) | cap accounts data allocations per transaction #27375
+    - SVn36yVApPLYsa8koK3qUcy14zXDnqkNYWyUh1f4oK1  # from slot 225504004 (epoch 522) | ignore slot when calculating an account hash #28420
+    - B9cdB55u4jQsDNsdTK525yE9dmSc5Ga7YBaBrDFvEhM9 # from slot 225936004 (epoch 523) | disable setting is_executable and_rent_epoch in CPI #26987
+    - 5GpmAKxaGsWWbPp4bNXFLJxZVvG92ctxf7jQnzTQjF3n # from slot 228528004 (epoch 529) | enable epoch accounts hash calculation #27539
+    - GmuBvtFb2aHfSfMXpuFeWZGHyDeCLPS79s48fmCWCfM5 # from slot 228960012 (epoch 530) | delay visibility of program upgrades #30085
+    - J4HFT8usBxpcF63y46t1upYobJgChmKyZPm5uTBRg25Z # from slot 228960012 (epoch 530) | enable program redeployment cooldown #29135
+    - 8Zs9W7D9MpSEtUWSQdGniZk2cNmV22y6FLJwCx53asme # from slot 229824000 (epoch 532) | enable bpf upgradeable loader ExtendProgram instruction #25234
+    - DdLwVYuvDz26JohmgSbA7mjpJFgX5zP2dkp8qsF2C33V # from slot 230256020 (epoch 533) | cap transaction accounts data size up to a limit #27839
+    - G6vbf1UBok8MWb8m25ex86aoQHeKTzDKzuZADHkShqm6 # from slot 231984004 (epoch 537) | add compute budget instruction for setting account data size per transaction #30366
+    - 3uFHb9oKdGfgZGJK9EHaAXN4USvnQtAFC13Fh5gGFS5B # from slot 232848000 (epoch 539) | Update desired hashes per tick on epoch boundary
+    - EfhYd3SafzGT472tYQDUc4dPd2xdEfKs5fwkowUgVt4W # from slot 233280000 (epoch 540) | remove support for RequestUnitsDeprecated instruction #27500
+    - Fab5oP3DmsLYCiQZXdjyqT3ukFFPrsmqhXU4WU1AWVVF # from slot 234144000 (epoch 542) | prevent recipients of rent rewards from ending in rent-paying state #30151
+    - 5Pecy6ie6XGm22pc9d4P9W5c31BugcFBuy6hsP2zkETv # from slot 234576004 (epoch 543) | checked arithmetic in fee validation #31273
+    - CE2et8pqgyQMP2mQRg3CgvX8nJBKUArMu3wfiQiQKY1y # from slot 235440004 (epoch 545) | round up heap size when calculating heap cost #30679
+    - EYVpEP7uzH1CoXzbD6PubGhYmnxRXPeq3PPsm1ba3gpo # from slot 236304016 (epoch 547) | stop the search in get_processed_sibling_instruction when the parent instruction is reached #27289
+    - A8xyMHZovGXFkorFqEmVH2PKGLiBip5JD7jt4zsUWo4H # from slot 236736000 (epoch 548) | Remove congestion multiplier from transaction fee calculation #29881
+    - 2HmTkCj9tXuPE4ueHzdD7jPeMf9JGCoZh5AsyoATiWEe # from slot 237168000 (epoch 549) | stop incorrectly throwing IncorrectProgramId in bpf_loader #30747
+    - 16FMCmgLzCNNz6eTwGanbyN2ZxvTBSLuQ6DZhgeMshg  # from slot 240192004 (epoch 556) | Stop truncating strings in syscalls #31029
+    - 8pgXCMNXC8qyEFypuwpXyRxLXZdpM4Qo72gJ6k87A6wL # from slot 240624008 (epoch 557) | Native program should consume compute units #30620
+    - 5ZCcFAzJ1zsFKe1KSZa9K92jhx7gkcKj97ci2DBo1vwj # from slot 241056004 (epoch 558) | Simplify checks performed for writable upgradeable program accounts #30559
+    - 25vqsfjk7Nv1prsQJmA4Xu1bN61s8LXCBGUPp8Rfy1UF # from slot 243648004 (epoch 564) | only hash accounts in incremental snapshot during incremental snapshot creation #26799
+    - GwtDQBghCTBgmX2cpEGNPxTEBUTQRaDMGTr5qychdGMj # from slot 244080000 (epoch 565) | reduce stake warmup cooldown from 25% to 9%
+    - BTWmtJC8U5ZLMbBUUA1k6As62sYjPEjAiNAT55xYGdJU # from slot 244944000 (epoch 567) | revise turbine epoch stakes
+    - 5wAGiy15X1Jb2hkHnPDCM8oB9V42VNA9ftNVFK84dEgv # from slot 246240000 (epoch 570) | set rent epoch to Epoch::MAX for rent-exempt accounts #28683
+    - D31EFnLgdiysi84Woo3of4JMu7VmasUS3Z7j9HYXCeLY # from slot 247104008 (epoch 572) | enable turbine fanout experiments #29393
+    - FKAcEvNgSY79RpqsPNUV5gDyumopH4cEHqUxyfm8b8Ap # from slot 249264000 (epoch 577) | relax authority signer check for lookup table creation #27205
+    - 5x3825XS7M2A3Ekbn5VGGkvFoAg5qrRWkTrY4bARP1GL # from slot 251424000 (epoch 582) | enable bpf upgradeable loader SetAuthorityChecked instruction #28424
+    - 7axKe5BTYBDD87ftzWbk5DfzWMGyRvqmWTduuo22Yaqy # from slot 252720000 (epoch 585) | replace Lockout with LandedVote (including vote latency) in vote state #31264
+    - EWme9uFqfy1ikK1jhJs8fM5hxWnK336QJpbscNtizkTU # from slot 253584001 (epoch 587) | Update desired hashes per tick to 2.8M
+    - D2aip4BBr8NPWtU9vLrwrBvbuaQ8w1zV38zFLxx4pfBV # from slot 254016004 (epoch 588) | Require stake split destination account to be rent exempt
+    - 8C8MCtsab5SsfammbzvYz65HHauuUYdbY2DZ4sznH6h5 # from slot 255312004 (epoch 591) | Update desired hashes per tick to 4.4M
+    - 8We4E7DPwF2WfAN8tRTtWQNhi98B99Qpuj7JoZ3Aikgg # from slot 255744008 (epoch 592) | Update desired hashes per tick to 7.6M
+    - BsKLKAn1WM4HVhPRDsjosmqSg2J8Tq5xP2s2daDS6Ni4 # from slot 257040000 (epoch 595) | Update desired hashes per tick to 9.2M
+    - FKu1qYwLQSiehz644H6Si65U5ZQ2cp9GxsyFUfYcuADv # from slot 257904000 (epoch 597) | Update desired hashes per tick to 10M
+    - prpFrMtgNmzaNzkPJg9o753fVvbHKqNrNTm76foJ2wm  # from slot 258336004 (epoch 598) | validate fee collector account #33888
+    - GV49KKQdBNaiv2pgqhS2Dy3GWYJGXMTVYbYkdk91orRy # from slot 259200004 (epoch 600) | drops legacy shreds #34328
+    - 7WeS1vfPRgeeoXArLh7879YcB9mgE9ktjPDtajXeWfXn # from slot 259632004 (epoch 601) | disable bpf loader management instructions #34194
+    - 6YsBCejwK96GZCkJ6mkZ4b68oP63z2PLoQmWjC7ggTqZ # from slot 260064000 (epoch 602) | consume duplicate proofs from blockstore in consensus #34372
+    - dupPajaLy2SSn8ko42aZz4mHANDNrLe8Nw8VQgFecLa  # from slot 260496000 (epoch 603) | generate duplicate proofs for index and erasure conflicts #34360
+    - eca6zf6JJRjQsYYPkBHF3N32MTzur4n2WL4QiiacPCL  # from slot 262224008 (epoch 607) | restrict curve25519 multiscalar multiplication vector lengths #34763
+    - Cdkc8PPTeTNUPoZEfCY5AyetUrEdkZtNPMgz58nqyaHD # from slot 273888000 (epoch 634) | switch to new ELF parser #30497
+    - JDn5q3GBeqzvUa7z67BbmVHVdE3EbUAjvFep3weR3jxX # from slot 274320000 (epoch 635) | SIMD-0129: simplify alt_bn128 syscall error codes
+    - 7rcw5UtqgDTBBv2EcynNfYckgdAaH1MAsCjKgXMkN7Ri # from slot 275184000 (epoch 637) | enable curve25519 syscalls
+    - A16q37opZdQMCbe5qJ6xpBB9usykfv8jZaMkxvZQi4GJ # from slot 275616000 (epoch 638) | add alt_bn128 syscalls #27961
+    - EJJewYSddEEtSZHiqugnvhQHiWyZKjkFDQASd7oKSagn # from slot 276912000 (epoch 641) | add alt_bn128 compression syscalls
+    - FL9RsQA6TVUoh5xJQ9d936RHSebA1NLQqe3Zv9sXZRpr # from slot 278208000 (epoch 644) | Enable Poseidon syscall
+    - 3NKRSwpySNwD3TvP5pHnRmkAQRsdkXWRr1WaQh8p4PWX # from slot 279072000 (epoch 646) | Reject bpf callx r10 instructions
+    - 8199Q2gMD2kwgfopK5qqVWuDbegLgpuFUFHCcUJQDN8b # from slot 280800004 (epoch 650) | error on bpf function hash collisions
+    - HooKD5NC9QNxk25QuzCssB8ecrEzGt6eXEPBUxWp1LaR # from slot 282096004 (epoch 653) | enable new sysvar last_restart_slot
+    - 6Uf8S75PVh91MYgPQSHnjRAPQq6an5BDv9vomrCwDqLe # from slot 283392000 (epoch 656) | Deprecate unused legacy vote tx plumbing
+    - mrkPjRg79B2oK2ZLgd7S3AfEJaX9B6gAF3H9aEykRUS  # from slot 283824004 (epoch 657) | generate duplicate proofs for merkle root conflicts #34270
+    - FNKCMBzYUdjhHyPdsKG2LSmdzH8TCHXn3ytj8RNBS4nG # from slot 284688004 (epoch 659) | enable gossip duplicate proof ingestion #32963
+    - tvcF6b1TRz353zKuhBjinZkKzjmihXmBAHJdjNYw1sQ  # from slot 303696000 (epoch 703) | use timeliness of votes in determining credits to award
+    - decoMktMcnmiq6t3u7g5BfgcQu91nKZr6RvMYf9z1Jb  # from slot 304128000 (epoch 704) | Allow commission decrease at any time in epoch #33843
+    - PERzQrt5gBD1XEe2c9XdFWqwgHY3mr7cYWbm5V772V8  # from slot 305424000 (epoch 707) | SIMD-0118: replaces enable_partitioned_epoch_reward to enable partitioned rewards at epoch boundary
+    - 7uZBkJXJ1HkuP6R3MJfZs7mLwymBcDbKdqbF51ZWLier # from slot 306720000 (epoch 710) | Enable chained Merkle shreds #34916
+    - ed9tNscbWLYBooxWA7FE2B5KHWs8A6sxfY8EzezEcoo  # from slot 308448000 (epoch 714) | SIMD-0152: Use strict verification in ed25519 precompile
+    - FuS3FPfJDKSNot99ECLXtp3rueq36hMNStJkPJwWodLh # from slot 311904000 (epoch 722) | SIMD-0137: Abort when elliptic curve syscalls invoked on invalid curve id
+    - wLckV1a64ngtcKPRGU4S4grVTestXjmNjxBjaKZrAcn  # from slot 312336000 (epoch 723) | cost model uses number of requested write locks #34819
+    - GDH5TVdbTPUpRnXaRyQqiKUa7uZAbZ28Q2N9bhbKoMLm # from slot 312768000 (epoch 724) | loosen cpi size restrictions #26641
+    - 7bTK6Jis8Xpfrs8ZoUfiMDPazTcdPcTWheZFJTA5Z6X4 # from slot 314064000 (epoch 727) | Enable MoveStake and MoveLamports stake program instructions #1610
+    - EQUMpNFr7Nacb1sva56xn1aLfBxppEoSBH8RRVdkcD1x # from slot 314496000 (epoch 728) | Disable account loader special case #3513
+    - zkhiy5oLowR7HY4zogXjCjeMXyruLqBwSWH21qcFtnv  # from slot 315792000 (epoch 731) | SIMD-0153: Enable ZkElGamalProof program
+    - BtVN7YjDzNE6Dk7kTT7YTDgMNUZTNgiSJgsdzAeTg2jF # from slot 317088000 (epoch 734) | Removing unwanted rounding in fee calculation #34982
+    - 3opE3EzAKnUftUDURkzMgwpNgimBAypW1mNDYH4x4Zg7 # from slot 320112000 (epoch 741) | Reward full priority fee to validators #34731
+    - 8U4skmMVnF6k2kMvrWbQuRUT3qQSiTYpSjqmhmgfthZu # from slot 320976000 (epoch 743) | add new unwritable reserved accounts #34899
+    - CLCoTADvV64PSrnR6QXty6Fwrt9Xc6EdxSJE4wLRePjq # from slot 321840000 (epoch 745) | Enable syscall for fetching Sysvar bytes #615
+    - tSynMCspg4xFiCj1v3TDb4c7crMR5tSBhLz4sF7rrNA  # from slot 323568000 (epoch 749) | Enable tower sync vote instruction
+    - 4eohviozzEeivk1y9UbrnekbAFMDQyJz5JjA9Y6gyvky # from slot 324864000 (epoch 752) | Migrate Feature Gate program to Core BPF (programify) #1003
+    - 2Fr57nzzkLYXW695UdDxDeR5fhnZWSttZeZYemrnpGFV # from slot 325296000 (epoch 753) | Migrate Config program to Core BPF #1378
+    - CGB2jM8pwZkeeiXQ66kBMyBR6Np61mggL7XUsmLjVcrw # from slot 326160000 (epoch 755) | skip rewriting rent exempt accounts during rent collection #26491
+    - CJzY83ggJHqPGDq8VisV3U91jDJLuEaALZooBrXtnnLU # from slot 326592000 (epoch 756) | Disable rent fees collection #33945
+    - PaymEPK2oqwT9TXAVfadjztH2H6KfLEB9Hhd5Q5frvP  # from slot 327024000 (epoch 757) | SIMD-0082: Enable fees for some additional transaction failures
+    - C9oAhLxDBm3ssWtJx1yBGzPY55r2rArHmN1pbQn6HogH # from slot 327456000 (epoch 758) | SIMD-0170: Reserve minimal CUs for builtin instructions #2562
+    - B7H2caeia4ZFcpE3QcgMqbiWiBtWrdBRBSJ1DY6Ktxbq # from slot 327888000 (epoch 759) | SIMD-0182: Deplete compute meter for vm errors #3993
+    - 9ypxGLzkMxi89eDerRKXWDXe44UY2z4hBig4mDhNq5Dp # from slot 328320000 (epoch 760) | SIMD-0159: Move precompile verification into SVM
+    - C97eKZygrkU4JxJsZdjgbUY7iQR7rKTr4NyDWo2E5pRm # from slot 329184000 (epoch 762) | Migrate Address Lookup Table program to Core BPF #1651
+    - 2ry7ygxiYURULZCrypHhveanvP5tzZ4toRwVp89oCNSj # from slot 329616000 (epoch 763) | apply cost tracker to blocks during replay #29595
+    - FKe75t4LXxGaQnVHdUKM6DSFifVVraGZ8LyNo7oPwy1Z # from slot 330912000 (epoch 766) | Enable syscall: sol_get_epoch_stake #884
+    - ffecLRhhakKSGhMuc6Fz2Lnfq4uT9q3iu9ZsNaPLxPc  # from slot 332208000 (epoch 769) | vote only full fec sets
+    - 5oMCU3JPaFLr8Zr4ct7yFA7jdk6Mw1RmB8K4u9ZbS42z # from slot 332640000 (epoch 770) | SIMD-0207: Raise block limit to 50M
+    - srremy31J5Y25FrAApwVb9kZcfXbusYMMsvTK9aWv5q  # from slot 345600000 (epoch 800) | SIMD-0075: Enable secp256r1 precompile
+    - RENtePQcDLrAbxAsP3k8dwVcnNYQ466hi2uKvALjnXx  # from slot 346032000 (epoch 801) | SIMD-0267: Sets rent_epoch to a constant in the VM
+    - LTHasHQX6661DaDD4S6A2TFi6QBuiwXKv66fB1obfHq  # from slot 347328000 (epoch 804) | SIMD-0215: enables lattice-based accounts hash
+    - zkdoVwnSFnSLtGJG7irJPEYUpmb4i7sGMGcnN6T9rnC  # from slot 347760000 (epoch 805) | Disables zk-elgamal-proof program
+    - LTdLt9Ycbyoipz5fLysCi1NnDnASsZfmJLJXts5ZxZz  # from slot 348624000 (epoch 807) | SIMD-0223: removes accounts delta hash
+    - 2B2SBNbUcr438LtGXNcJNBP2GBSxjx81F945SdSkUSfC # from slot 349056000 (epoch 808) | SIMD-0175: Disable partitioned rent collection #4562
+    - JE86WkYvTrzW8HgNmrHY7dFYpCmSptUpKupbo2AdQ9cG # from slot 349488000 (epoch 809) | SIMD-0166: Enable deployment and execution of SBPFv1 programs
+    - FXs1zh47QbNnhXcnB6YiAQoJ4sGB91tKF3UFHLcKT7PM # from slot 350352004 (epoch 811) | SIMD-0162: Remove checks of accounts is_executable flag
+    - LTsNAP8h1voEVVToMNBNqoiNQex4aqfUrbFhRH3mSQ2  # from slot 353376000 (epoch 818) | SIMD-0220: snapshots use lattice-based accounts hash
+    - 5KLGJSASDVxKPjLCDWNtnABLpZjsQSrYZ8HKwcEdAMC8 # from slot 354672000 (epoch 821) | drops unchained Merkle shreds #2149
+    - 6oMCUgfY6BzZ6jwB681J6ju5Bh6CjVXbd7NeWYqiXBSu # from slot 355104000 (epoch 822) | SIMD-0256: Raise block limit to 60M
+    - 6M4oQ6eXneVhtLoiAr4yRYQY43eVLjrKbiDZDJc892yk # from slot 355536000 (epoch 823) | SIMD-0196: Migrate Stake program to Core BPF #3655
+    - F6UVKh1ujTEFK3en2SyAL3cdVnqko1FVEXWhmdLRu6WP # from slot 356400000 (epoch 825) | SIMD-0173 and SIMD-0174: Enable deployment and execution of SBPFv2 programs
+    - bn2puAyxUx6JUabAxYdKdJ5QHbNNmKw8dCGuGCyRrFN  # from slot 361152000 (epoch 836) | SIMD-0222: fix alt_bn128 multiplication input length #3686
+    - 5JsG4NWH8Jbrqdd8uL6BNwnyZK3dQSoieRXG5vmofj9y # from slot 363312000 (epoch 841) | SIMD-0180: Enable vote address leader schedule #4573
+    - htsptAwi2yRoZH83SKaUXykeZGtZHgxkS2QwW1pssR8  # from slot 379296000 (epoch 878) | SIMD-0306: Raise account CU limit to 40% max
+    - turbnbNRp22nwZCmgVVXFSshz7H7V23zMzQgA46YpmQ  # from slot 380160000 (epoch 880) | disable turbine fanout experiments #29393
+    - DeS7sR48ZcFTUmt5FFEVDr1v1bh73aAbZiZq3SYr8Eh8 # from slot 381888000 (epoch 884) | SIMD-0186: Loaded transaction data size specification
+    - 7VVhpg5oAjAmnmz1zCcSHb2Z9ecZB2FQqpnEwReka9Zm # from slot 384480000 (epoch 890) | SIMD-0242: Static Nonce Account Only
+    - H6iVbVaDZgDphcPbcZwc5LoznMPWQfnJ1AM7L1xzqvt5 # from slot 403056000 (epoch 933) | SIMD-0339: Increase CPI Account Infos Limit
+    - fixfecLZYMfkGzwq6NJA11Yw6KYztzXiK9QcL3K78in  # from slot 403920000 (epoch 935) | SIMD-0317: Enforce 32 data + 32 coding shreds
+    - 64ixypL1HPu8WtJhNSMb9mSgfFaJvsANuRkTbHyuLfnx # from slot 404352000 (epoch 936) | SIMD-0160: static instruction limit

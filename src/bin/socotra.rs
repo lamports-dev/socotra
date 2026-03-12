@@ -40,8 +40,9 @@ struct Args {
     #[clap(long)]
     pub check: bool,
 
-    /// Debug: fetch current slot from RPC and store it, skip catching up to the tip
-    #[clap(long)]
+    /// WARNING: DB state will be broken. Debug only.
+    /// Fetch current slot from RPC and store it, skip catching up to the tip.
+    #[clap(long, hide = true)]
     pub skip_catching_tip: bool,
 }
 
@@ -88,7 +89,8 @@ fn try_main() -> anyhow::Result<()> {
     let storage_init_config = config.storage.init;
     let storage_init_buffer_path = config.storage.path.join("geyser_buffer.bin");
     let db_path = config.storage.path.clone();
-    let db = Rocksdb::open(config.storage.path, config.storage.compression)?;
+    let feature_set = config.feature_set.to_feature_set()?;
+    let db = Rocksdb::open(config.storage.path, config.storage.compression, feature_set)?;
     let (reader, reader_threads) = Reader::new(
         db.clone(),
         storage_blocks_config.request_channel_capacity,

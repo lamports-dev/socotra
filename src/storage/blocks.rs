@@ -13,7 +13,12 @@ use {
     richat_metrics::duration_to_seconds,
     richat_proto::geyser::SlotStatus,
     serde::{Deserialize, Serialize},
-    solana_sdk::{account::Account, clock::Slot, pubkey::Pubkey},
+    solana_sdk::{
+        account::Account,
+        clock::{MAX_PROCESSING_AGE, Slot},
+        hash::Hash,
+        pubkey::Pubkey,
+    },
     std::{
         collections::{BTreeMap, VecDeque},
         path::PathBuf,
@@ -33,6 +38,7 @@ use {
 #[derive(Debug)]
 struct Block {
     height: Option<Slot>,
+    blockhash: Option<Hash>,
     accounts: HashMap<Pubkey, Arc<Account>>,
     confirmed: bool,
     dead: bool,
@@ -42,6 +48,7 @@ impl Default for Block {
     fn default() -> Self {
         Self {
             height: None,
+            blockhash: None,
             accounts: HashMap::with_capacity_and_hasher(8_192, Default::default()),
             confirmed: false,
             dead: false,
@@ -59,6 +66,7 @@ enum DiskMessage {
     Block {
         slot: Slot,
         height: Slot,
+        blockhash: [u8; 32],
         accounts: Vec<(Pubkey, Account)>,
     },
     AccountAfterBlock {
@@ -79,10 +87,12 @@ impl From<&GeyserMessage> for DiskMessage {
             GeyserMessage::Block {
                 slot,
                 height,
+                blockhash,
                 accounts,
             } => DiskMessage::Block {
                 slot: *slot,
                 height: *height,
+                blockhash: blockhash.to_bytes(),
                 accounts: accounts
                     .iter()
                     .map(|(k, v)| (*k, Account::clone(v)))
@@ -115,10 +125,12 @@ impl TryFrom<DiskMessage> for GeyserMessage {
             DiskMessage::Block {
                 slot,
                 height,
+                blockhash,
                 accounts,
             } => GeyserMessage::Block {
                 slot,
                 height,
+                blockhash: Hash::new_from_array(blockhash),
                 accounts: accounts
                     .into_iter()
                     .map(|(k, v)| (k, Arc::new(v)))
@@ -265,6 +277,13 @@ pub async fn start(
         }
     };
 
+    // Load finalized blockhashes from DB
+    let mut finalized_blockhashes = db.load_blockhashes()?;
+    info!(
+        count = finalized_blockhashes.len(),
+        "loaded blockhashes from db"
+    );
+
     // Replay buffered messages
     let mut disk_reader = if disk_buffer.count > 0 {
         info!(
@@ -285,7 +304,8 @@ pub async fn start(
             let db = db.clone();
             move || {
                 for req in store_rx {
-                    let result = db.store_new_state(req.slot_info, req.accounts.into_iter());
+                    let result =
+                        db.store_new_state(req.slot_info, req.accounts.into_iter(), req.blockhash);
                     let _ = req.result_tx.send(result);
                 }
             }
@@ -314,13 +334,20 @@ pub async fn start(
                 };
                 match msg {
                     Some(msg) => {
-                        process_message(&store_tx, &mut latest_stored_slot, &mut slots, msg).await?
+                        process_message(
+                            &store_tx,
+                            &mut latest_stored_slot,
+                            &mut slots,
+                            &mut finalized_blockhashes,
+                            msg,
+                        )
+                        .await?
                     }
                     None => break,
                 }
             }
             let ts = Instant::now();
-            let state = build_reader_state(&slots, &latest_stored_slot)?;
+            let state = build_reader_state(&slots, &latest_stored_slot, &finalized_blockhashes)?;
             histogram!(BUILD_READER_STATE_SECONDS).record(duration_to_seconds(ts.elapsed()));
             reader
                 .update(Arc::new(state))
@@ -355,6 +382,7 @@ pub async fn start(
 struct StoreRequest {
     slot_info: SlotIndexValue,
     accounts: HashMap<Pubkey, Arc<Account>>,
+    blockhash: Hash,
     result_tx: oneshot::Sender<anyhow::Result<()>>,
 }
 
@@ -362,10 +390,13 @@ async fn process_message(
     store_tx: &std::sync::mpsc::Sender<StoreRequest>,
     latest_stored_slot: &mut SlotIndexValue,
     slots: &mut BTreeMap<Slot, Block>,
+    finalized_blockhashes: &mut BTreeMap<Slot, Hash>,
     msg: GeyserMessage,
 ) -> anyhow::Result<()> {
     match msg {
         GeyserMessage::Reset => {
+            // Keep finalized entries (backed by DB), clear in-memory above finalized height
+            finalized_blockhashes.split_off(&(latest_stored_slot.height + 1));
             slots.clear();
         }
         GeyserMessage::Slot { slot, status } => {
@@ -403,7 +434,18 @@ async fn process_message(
                         "height mismatch: {} + 1 == {height}",
                         latest_stored_slot.height
                     );
+
+                    let blockhash = block
+                        .blockhash
+                        .ok_or_else(|| anyhow::anyhow!("no blockhash for finalized slot#{slot}"))?;
+
                     *latest_stored_slot = SlotIndexValue { slot, height };
+
+                    // Update finalized blockhashes and prune old
+                    finalized_blockhashes.insert(height, blockhash);
+                    let min_height = height.saturating_sub(MAX_PROCESSING_AGE as u64 - 1);
+                    // Remove entries below min_height
+                    *finalized_blockhashes = finalized_blockhashes.split_off(&min_height);
 
                     // store new slot on dedicated thread
                     let (result_tx, result_rx) = oneshot::channel();
@@ -412,6 +454,7 @@ async fn process_message(
                         .send(StoreRequest {
                             slot_info: *latest_stored_slot,
                             accounts: block.accounts,
+                            blockhash,
                             result_tx,
                         })
                         .map_err(|_| anyhow::anyhow!("store thread gone"))?;
@@ -427,6 +470,7 @@ async fn process_message(
         GeyserMessage::Block {
             slot,
             height,
+            blockhash,
             accounts,
         } => {
             anyhow::ensure!(
@@ -436,6 +480,7 @@ async fn process_message(
 
             let block = slots.entry(slot).or_default();
             block.height = Some(height);
+            block.blockhash = Some(blockhash);
             block.accounts = accounts;
         }
         GeyserMessage::AccountAfterBlock {
@@ -460,11 +505,13 @@ async fn process_message(
 fn build_reader_state(
     slots: &BTreeMap<Slot, Block>,
     latest_stored_slot: &SlotIndexValue,
+    finalized_blockhashes: &BTreeMap<Slot, Hash>,
 ) -> anyhow::Result<ReaderState> {
     // Confirmed: heights must be strictly incremental
     let mut confirmed_slot = latest_stored_slot.slot;
     let mut confirmed_map = HashMap::with_capacity_and_hasher(65_536, Default::default());
     let mut expected_confirmed_height = latest_stored_slot.height + 1;
+    let mut confirmed_blockhashes = Vec::with_capacity(32);
 
     {
         let _span = info_span!("confirmed").entered();
@@ -479,6 +526,9 @@ fn build_reader_state(
                     "confirmed height mismatch at slot#{slot}: expected {expected_confirmed_height}, got {height}"
                 );
                 expected_confirmed_height = height + 1;
+                if let Some(bh) = block.blockhash {
+                    confirmed_blockhashes.push((height, bh));
+                }
             }
             confirmed_slot = slot;
             for (&pubkey, account) in &block.accounts {
@@ -492,8 +542,9 @@ fn build_reader_state(
     // slot at each height level, which represents the latest fork tip.
     let mut processed_slot = confirmed_slot;
     let mut processed_map = HashMap::with_capacity_and_hasher(8_192, Default::default());
+    let mut processed_blockhashes = Vec::with_capacity(2);
 
-    {
+    let processed_height = {
         let _span = info_span!("processed").entered();
 
         // Group unconfirmed non-dead blocks by height, keeping the highest slot per height
@@ -518,9 +569,25 @@ fn build_reader_state(
             for (&pubkey, account) in &block.accounts {
                 processed_map.insert(pubkey, Arc::clone(account));
             }
+            if let Some(bh) = block.blockhash {
+                processed_blockhashes.push((height, bh));
+            }
             next_height = height + 1;
         }
-    }
+
+        next_height - 1
+    };
+
+    // Build blockhash -> height map from finalized + confirmed + processed,
+    // filtered to the valid age window
+    let min_height = processed_height.saturating_sub(MAX_PROCESSING_AGE as u64 - 1);
+    let blockhash_map = finalized_blockhashes
+        .range(min_height..=processed_height)
+        .map(|(height, hash)| (*height, *hash))
+        .chain(confirmed_blockhashes.into_iter())
+        .chain(processed_blockhashes.into_iter())
+        .map(|(height, hash)| (hash, height))
+        .collect();
 
     gauge!(STORED_SLOT, "commitment" => "processed").set(processed_slot as f64);
     gauge!(STORED_SLOT, "commitment" => "confirmed").set(confirmed_slot as f64);
@@ -528,9 +595,12 @@ fn build_reader_state(
 
     Ok(ReaderState {
         processed_slot,
+        processed_height,
         processed_map,
         confirmed_slot,
+        confirmed_height: expected_confirmed_height - 1,
         confirmed_map,
         finalized_slot: latest_stored_slot.slot,
+        blockhash_map,
     })
 }
