@@ -43,7 +43,7 @@ use {
     solana_transaction::versioned::VersionedTransaction,
     solana_transaction_status_client_types::{
         TransactionBinaryEncoding, UiCompiledInstruction, UiInnerInstructions, UiInstruction,
-        UiReturnDataEncoding, UiTransactionEncoding, UiTransactionReturnData,
+        UiLoadedAddresses, UiReturnDataEncoding, UiTransactionEncoding, UiTransactionReturnData,
     },
     std::{any::type_name, sync::Arc},
     tracing::{Instrument, info_span},
@@ -706,7 +706,7 @@ impl RpcRequestHandler for RpcRequestSimulateTransaction {
                     post_balances: None,       // TODO
                     pre_token_balances: None,  // TODO
                     post_token_balances: None, // TODO
-                    loaded_addresses: None,    // TODO
+                    loaded_addresses: Some(UiLoadedAddresses::from(&data.loaded_addresses)),
                 };
 
                 Ok(jsonrpc_response_success(

@@ -124,6 +124,7 @@ impl From<GetAccountsError> for ReadResultAccount {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum ReadResultSimulateTransaction {
     ReqChanClosed,
     ReqChanFull,

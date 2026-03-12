@@ -196,6 +196,7 @@ pub struct GetSimulateTransactionData {
     #[allow(clippy::type_complexity)]
     pub post_simulation_accounts: Option<(Vec<(Pubkey, Option<Account>)>, UiAccountEncoding)>,
     pub loaded_accounts_data_size: u32,
+    pub loaded_addresses: LoadedAddresses,
 }
 
 impl std::fmt::Debug for GetSimulateTransactionData {
@@ -629,6 +630,7 @@ impl Rocksdb {
                 replacement_blockhash,
                 post_simulation_accounts: None,
                 loaded_accounts_data_size: 0,
+                loaded_addresses: LoadedAddresses::default(),
             });
         }
 
@@ -641,6 +643,17 @@ impl Rocksdb {
             .with_transaction_history(0);
 
         reader.svm_load_sysvars(&mut svm, state, commitment)?;
+
+        let loaded_addresses = (&address_loader)
+            .load_addresses(
+                unsanitized_tx
+                    .message
+                    .address_table_lookups()
+                    .unwrap_or_default(),
+            )
+            .map_err(|e| {
+                GetSimulateTransactionDataError::InvalidParams(format!("address lookup: {e}"))
+            })?;
 
         // Load ALT
         let num_lookup_tables = address_loader.accounts.len();
@@ -709,6 +722,7 @@ impl Rocksdb {
             replacement_blockhash,
             post_simulation_accounts,
             loaded_accounts_data_size,
+            loaded_addresses,
         })
     }
 }
