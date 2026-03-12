@@ -19,7 +19,9 @@ use {
     solana_account_decoder::{
         UiAccountEncoding,
         parse_account_data::{AccountAdditionalDataV3, SplTokenAdditionalDataV2},
-        parse_token::{get_token_account_mint, is_known_spl_token_id},
+        parse_token::{
+            get_token_account_mint, is_known_spl_token_id, token_amount_to_ui_amount_v3,
+        },
     },
     solana_address_lookup_table_interface::{
         error::AddressLookupError, program as address_lookup_table_program,
@@ -46,12 +48,15 @@ use {
     solana_transaction::{sanitized::MessageHash, versioned::VersionedTransaction},
     solana_transaction_context::TransactionReturnData,
     solana_transaction_error::{AddressLoaderError, TransactionResult},
+    solana_transaction_status_client_types::{
+        UiTransactionTokenBalance, option_serializer::OptionSerializer,
+    },
     spl_token_2022_interface::{
         extension::{
             BaseStateWithExtensions, StateWithExtensions,
             interest_bearing_mint::InterestBearingConfig, scaled_ui_amount::ScaledUiAmountConfig,
         },
-        state::Mint,
+        state::{Account as TokenAccount, Mint},
     },
     std::{
         collections::BTreeMap,
@@ -199,6 +204,8 @@ pub struct GetSimulateTransactionData {
     pub loaded_addresses: LoadedAddresses,
     pub pre_balances: Vec<u64>,
     pub post_balances: Vec<u64>,
+    pub pre_token_balances: Vec<UiTransactionTokenBalance>,
+    pub post_token_balances: Vec<UiTransactionTokenBalance>,
 }
 
 impl std::fmt::Debug for GetSimulateTransactionData {
@@ -635,6 +642,8 @@ impl Rocksdb {
                 loaded_addresses: LoadedAddresses::default(),
                 pre_balances: Vec::new(),
                 post_balances: Vec::new(),
+                pre_token_balances: Vec::new(),
+                post_token_balances: Vec::new(),
             });
         }
 
@@ -678,6 +687,12 @@ impl Rocksdb {
             .map(|key| svm.get_account(key).map_or(0, |acc| acc.lamports))
             .collect();
 
+        let has_token_program = account_keys.iter().any(is_known_spl_token_id);
+        let pre_token_balances =
+            collect_token_balances(&account_keys, has_token_program, &transaction, |pk| {
+                svm.get_account(pk).map(|acc| (acc.owner, acc.data))
+            });
+
         let (result, logs, units_consumed, return_data, inner_instructions, fee, post_accounts) =
             match svm.simulate_transaction(unsanitized_tx) {
                 Ok(info) => (
@@ -703,13 +718,22 @@ impl Rocksdb {
         let post_balances: Vec<u64> = account_keys
             .iter()
             .enumerate()
-            .map(|(i, key)| {
+            .map(|(i, pk)| {
                 post_accounts
                     .iter()
-                    .find(|(k, _)| k == key)
+                    .find(|(acc_pk, _)| acc_pk == pk)
                     .map_or(pre_balances[i], |(_, acc)| acc.lamports())
             })
             .collect();
+
+        let post_token_balances =
+            collect_token_balances(&account_keys, has_token_program, &transaction, |pk| {
+                post_accounts
+                    .iter()
+                    .find(|(acc_pk, _)| acc_pk == pk)
+                    .map(|(_, acc)| (*acc.owner(), acc.data().to_vec()))
+                    .or_else(|| svm.get_account(pk).map(|a| (a.owner, a.data)))
+            });
 
         let post_simulation_accounts = config_accounts.map(|config| {
             let encoding = config.encoding.unwrap_or(UiAccountEncoding::Base64);
@@ -746,6 +770,8 @@ impl Rocksdb {
             loaded_addresses,
             pre_balances,
             post_balances,
+            pre_token_balances,
+            post_token_balances,
         })
     }
 }
@@ -1029,6 +1055,61 @@ impl Drop for AccountReader<'_> {
         counter!(READ_ACCOUNTS_BYTES_TOTAL, "x_subscription_id" => Arc::clone(&self.x_subscription_id))
             .increment(self.bytes_read as u64);
     }
+}
+
+fn collect_token_balances(
+    account_keys: &[Pubkey],
+    has_token_program: bool,
+    transaction: &impl SVMMessage,
+    get_account: impl Fn(&Pubkey) -> Option<(Pubkey, Vec<u8>)>,
+) -> Vec<UiTransactionTokenBalance> {
+    if !has_token_program {
+        return Vec::new();
+    }
+
+    let mut balances = Vec::new();
+    for (index, key) in account_keys.iter().enumerate() {
+        if is_known_spl_token_id(key) || transaction.is_invoked(index) {
+            continue;
+        }
+        let Some((owner, data)) = get_account(key) else {
+            continue;
+        };
+        if !is_known_spl_token_id(&owner) {
+            continue;
+        }
+        let program_id = owner;
+        let Ok(token_account) = StateWithExtensions::<TokenAccount>::unpack(&data) else {
+            continue;
+        };
+        let mint = token_account.base.mint;
+        let token_owner = token_account.base.owner;
+        let amount = token_account.base.amount;
+
+        let Some((mint_owner, mint_data)) = get_account(&mint) else {
+            continue;
+        };
+        if mint_owner != program_id {
+            continue;
+        }
+        let Ok(mint_state) = StateWithExtensions::<Mint>::unpack(&mint_data) else {
+            continue;
+        };
+
+        let ui_token_amount = token_amount_to_ui_amount_v3(
+            amount,
+            &SplTokenAdditionalDataV2::with_decimals(mint_state.base.decimals),
+        );
+
+        balances.push(UiTransactionTokenBalance {
+            account_index: index as u8,
+            mint: mint.to_string(),
+            ui_token_amount,
+            owner: OptionSerializer::Some(token_owner.to_string()),
+            program_id: OptionSerializer::Some(program_id.to_string()),
+        });
+    }
+    balances
 }
 
 struct SnapshotAddressLoader {

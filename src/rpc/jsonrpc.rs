@@ -704,8 +704,8 @@ impl RpcRequestHandler for RpcRequestSimulateTransaction {
                     fee: Some(data.fee),
                     pre_balances: Some(data.pre_balances),
                     post_balances: Some(data.post_balances),
-                    pre_token_balances: None,  // TODO
-                    post_token_balances: None, // TODO
+                    pre_token_balances: Some(data.pre_token_balances),
+                    post_token_balances: Some(data.post_token_balances),
                     loaded_addresses: Some(UiLoadedAddresses::from(&data.loaded_addresses)),
                 };
 
