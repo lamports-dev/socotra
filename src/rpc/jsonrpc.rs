@@ -697,7 +697,7 @@ impl RpcRequestHandler for RpcRequestSimulateTransaction {
                     logs: Some(data.logs),
                     accounts,
                     units_consumed: Some(data.units_consumed),
-                    loaded_accounts_data_size: None, // TODO
+                    loaded_accounts_data_size: Some(data.loaded_accounts_data_size),
                     return_data,
                     inner_instructions,
                     replacement_blockhash: data.replacement_blockhash,

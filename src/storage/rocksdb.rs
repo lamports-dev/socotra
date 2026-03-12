@@ -195,6 +195,7 @@ pub struct GetSimulateTransactionData {
     /// `None` means no accounts were requested.
     #[allow(clippy::type_complexity)]
     pub post_simulation_accounts: Option<(Vec<(Pubkey, Option<Account>)>, UiAccountEncoding)>,
+    pub loaded_accounts_data_size: u32,
 }
 
 impl std::fmt::Debug for GetSimulateTransactionData {
@@ -627,6 +628,7 @@ impl Rocksdb {
                 fee: 0,
                 replacement_blockhash,
                 post_simulation_accounts: None,
+                loaded_accounts_data_size: 0,
             });
         }
 
@@ -641,6 +643,8 @@ impl Rocksdb {
         reader.svm_load_sysvars(&mut svm, state, commitment)?;
 
         // Load ALT
+        let num_lookup_tables = address_loader.accounts.len();
+        let mut loaded_accounts_data_size = (num_lookup_tables * 8248) as u32;
         for (pubkey, account) in address_loader.accounts {
             svm.set_account(pubkey, account)
                 .map_err(AccountReaderError::from)?;
@@ -648,7 +652,8 @@ impl Rocksdb {
 
         // Load all accounts referenced by the transaction
         let account_keys: Vec<Pubkey> = transaction.account_keys().iter().copied().collect();
-        reader.svm_load_accounts(&mut svm, &account_keys, state, commitment)?;
+        loaded_accounts_data_size +=
+            reader.svm_load_accounts(&mut svm, &account_keys, state, commitment)?;
 
         let (result, logs, units_consumed, return_data, inner_instructions, fee, post_accounts) =
             match svm.simulate_transaction(unsanitized_tx) {
@@ -703,6 +708,7 @@ impl Rocksdb {
             fee,
             replacement_blockhash,
             post_simulation_accounts,
+            loaded_accounts_data_size,
         })
     }
 }
@@ -909,7 +915,7 @@ impl<'a> AccountReader<'a> {
         pubkeys: &[Pubkey],
         state: &ReaderState,
         commitment: CommitmentLevel,
-    ) -> Result<(), AccountReaderError> {
+    ) -> Result<u32, AccountReaderError> {
         // Partition keys into cached vs db-needed
         let mut resolved: Vec<(Pubkey, Account)> = Vec::new();
         let mut db_needed: Vec<Pubkey> = Vec::new();
@@ -960,12 +966,20 @@ impl<'a> AccountReader<'a> {
             }
         }
 
+        // SIMD-0186: base size per account
+        const ACCOUNT_BASE_SIZE: usize = 64;
+
+        let loaded_accounts_data_size: u32 = resolved
+            .iter()
+            .map(|(_, account)| (ACCOUNT_BASE_SIZE + account.data.len()) as u32)
+            .sum();
+
         // Set all accounts on SVM
         for (pubkey, account) in resolved {
             svm.set_account(pubkey, account)?;
         }
 
-        Ok(())
+        Ok(loaded_accounts_data_size)
     }
 }
 
