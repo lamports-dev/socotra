@@ -33,7 +33,7 @@ use {
     },
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
-        account::Account,
+        account::{Account, ReadableAccount},
         clock::{Clock, MAX_PROCESSING_AGE, Slot, UnixTimestamp},
         hash::Hash,
         message::{AddressLoader, v0::LoadedAddresses},
@@ -197,6 +197,8 @@ pub struct GetSimulateTransactionData {
     pub post_simulation_accounts: Option<(Vec<(Pubkey, Option<Account>)>, UiAccountEncoding)>,
     pub loaded_accounts_data_size: u32,
     pub loaded_addresses: LoadedAddresses,
+    pub pre_balances: Vec<u64>,
+    pub post_balances: Vec<u64>,
 }
 
 impl std::fmt::Debug for GetSimulateTransactionData {
@@ -631,6 +633,8 @@ impl Rocksdb {
                 post_simulation_accounts: None,
                 loaded_accounts_data_size: 0,
                 loaded_addresses: LoadedAddresses::default(),
+                pre_balances: Vec::new(),
+                post_balances: Vec::new(),
             });
         }
 
@@ -668,6 +672,12 @@ impl Rocksdb {
         loaded_accounts_data_size +=
             reader.svm_load_accounts(&mut svm, &account_keys, state, commitment)?;
 
+        // Collect pre-balances before simulation
+        let pre_balances: Vec<u64> = account_keys
+            .iter()
+            .map(|key| svm.get_account(key).map_or(0, |acc| acc.lamports))
+            .collect();
+
         let (result, logs, units_consumed, return_data, inner_instructions, fee, post_accounts) =
             match svm.simulate_transaction(unsanitized_tx) {
                 Ok(info) => (
@@ -689,6 +699,17 @@ impl Rocksdb {
                     Vec::new(),
                 ),
             };
+
+        let post_balances: Vec<u64> = account_keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| {
+                post_accounts
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map_or(pre_balances[i], |(_, acc)| acc.lamports())
+            })
+            .collect();
 
         let post_simulation_accounts = config_accounts.map(|config| {
             let encoding = config.encoding.unwrap_or(UiAccountEncoding::Base64);
@@ -723,6 +744,8 @@ impl Rocksdb {
             post_simulation_accounts,
             loaded_accounts_data_size,
             loaded_addresses,
+            pre_balances,
+            post_balances,
         })
     }
 }

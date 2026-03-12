@@ -702,8 +702,8 @@ impl RpcRequestHandler for RpcRequestSimulateTransaction {
                     inner_instructions,
                     replacement_blockhash: data.replacement_blockhash,
                     fee: Some(data.fee),
-                    pre_balances: None,        // TODO
-                    post_balances: None,       // TODO
+                    pre_balances: Some(data.pre_balances),
+                    post_balances: Some(data.post_balances),
                     pre_token_balances: None,  // TODO
                     post_token_balances: None, // TODO
                     loaded_addresses: Some(UiLoadedAddresses::from(&data.loaded_addresses)),
